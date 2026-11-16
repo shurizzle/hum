@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<head><title>hum</title></head>
+<body>
+<script>
+// Messages to the daemon go through console.log with the "HUM " prefix (see main.js).
+const send = (msg) => console.log('HUM ' + JSON.stringify(msg));
+
+let player;
+let tokenWaiters = [];
+
+// Called by main.js when the daemon answers a token request.
+function setToken(token) {
+  const waiters = tokenWaiters;
+  tokenWaiters = [];
+  waiters.forEach((cb) => cb(token));
+}
+
+async function command(cmd, arg) {
+  if (!player) return;
+  switch (cmd) {
+    case 'toggle': return player.togglePlay();
+    case 'play': return player.resume();
+    case 'pause': return player.pause();
+    case 'next': return player.nextTrack();
+    case 'prev': return player.previousTrack();
+    case 'seek': return player.seek(arg);
+    case 'volume': await player.setVolume(arg); return report();
+  }
+}
+
+function cover(images) {
+  return (images || []).slice().sort((a, b) => Math.abs((a.width || 300) - 300) - Math.abs((b.width || 300) - 300))[0]?.url || '';
+}
+
+async function report(s) {
+  s = s || await player.getCurrentState();
+  const volume = await player.getVolume();
+  if (!s) return send({ state: { volume } });
+  const t = s.track_window.current_track || {};
+  const st = {
+    uri: t.uri || '',
+    name: t.name || '',
+    artists: (t.artists || []).map((a) => a.name).join(', '),
+    album: t.album?.name || '',
+    cover: cover(t.album?.images),
+    context: s.context?.uri || '',
+    duration_ms: s.duration,
+    position_ms: s.position,
+    playing: !s.paused,
+    volume,
+  };
+  send({ state: st });
+}
+
+window.onSpotifyWebPlaybackSDKReady = () => {
+  player = new Spotify.Player({
+    name: 'hum',
+    getOAuthToken: (cb) => { tokenWaiters.push(cb); send({ want_token: true }); },
+    volume: 0.5,
+  });
+  for (const ev of ['initialization_error', 'authentication_error', 'account_error', 'playback_error']) {
+    player.addListener(ev, (e) => send({ error: `${ev}: ${e.message}` }));
+  }
+  // report() too: until a track loads, the daemon would not know the volume.
+  player.addListener('ready', ({ device_id }) => { send({ ready: device_id }); report(); });
+  player.addListener('not_ready', () => send({ error: 'player went offline' }));
+  player.addListener('player_state_changed', (s) => s && report(s));
+  player.connect();
+};
+</script>
+<script src="https://sdk.scdn.co/spotify-player.js"></script>
+</body>
+</html>

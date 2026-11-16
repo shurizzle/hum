@@ -1,0 +1,978 @@
+mod draw;
+mod images;
+
+use std::time::{Duration, Instant};
+
+use anyhow::{Result, bail};
+use crossterm::{
+    event::{
+        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+        MouseButton, MouseEvent, MouseEventKind,
+    },
+    execute,
+};
+use futures_util::StreamExt;
+use ratatui::{DefaultTerminal, layout::Rect};
+use tokio::{sync::mpsc, task::AbortHandle};
+
+use crate::{
+    api::{Api, Item},
+    proto::{self, Cmd, Conn, Msg, NowPlaying},
+};
+use images::{Done, Images};
+
+const TOKEN_REFRESH: Duration = Duration::from_secs(30 * 60);
+/// Upcoming tracks shown; each uncached one costs a Web API call.
+const QUEUE_LEN: usize = 20;
+/// Synced lyrics follow the song again this long after a manual scroll.
+pub const LYRICS_FOLLOW: Duration = Duration::from_secs(5);
+const VOLUME_STEP: u16 = u16::MAX / 20;
+const SEEK_STEP: u32 = 10_000;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Kind {
+    /// Horizontal row of cover cards.
+    Shelf,
+    /// Vertical track list.
+    List,
+    /// Compact tiles in rows, like the shortcuts at the top of Spotify's home.
+    Grid,
+}
+
+pub struct Sec {
+    pub title: String,
+    pub kind: Kind,
+    pub items: Vec<Item>,
+    /// First visible card of a shelf.
+    pub off: usize,
+    /// Tiles per row of a grid, set by the renderer.
+    pub cols: usize,
+}
+
+impl Sec {
+    fn new(title: impl Into<String>, kind: Kind, items: Vec<Item>) -> Self {
+        Self { title: title.into(), kind, items, off: 0, cols: 1 }
+    }
+
+    /// Item to land on when entering this section from above or below.
+    fn entry(&self, from_above: bool) -> usize {
+        match self.kind {
+            Kind::Shelf => self.off,
+            Kind::List if !from_above => self.items.len() - 1,
+            Kind::Grid if !from_above => (self.items.len() - 1) / self.cols.max(1) * self.cols.max(1),
+            _ => 0,
+        }
+    }
+}
+
+pub struct Page {
+    pub title: String,
+    /// The opened entity (playlist, album, artist), shown as a big header.
+    pub header: Option<Item>,
+    /// Context to play tracks in.
+    pub context: Option<String>,
+    pub secs: Vec<Sec>,
+    /// Selected (section, item).
+    pub sel: (usize, usize),
+    /// First visible layout block, maintained by the renderer.
+    pub top: usize,
+    /// More items are still being fetched.
+    pub loading: bool,
+    /// Item to select once it streams in (the playing track on startup).
+    focus: Option<String>,
+}
+
+impl Page {
+    fn new(title: impl Into<String>, header: Option<Item>, secs: Vec<Sec>) -> Self {
+        let context = header.as_ref().map(|h| h.uri.clone());
+        let secs: Vec<Sec> = secs.into_iter().filter(|s| !s.items.is_empty()).collect();
+        Self { title: title.into(), header, context, secs, sel: (0, 0), top: 0, loading: false, focus: None }
+    }
+
+    pub fn selected(&self) -> Option<&Item> {
+        self.secs.get(self.sel.0)?.items.get(self.sel.1)
+    }
+
+    fn vertical(&mut self, down: bool) {
+        let (s, i) = self.sel;
+        let Some(sec) = self.secs.get(s) else { return };
+        let step = match sec.kind {
+            Kind::List => 1,
+            Kind::Grid => sec.cols.max(1),
+            Kind::Shelf => usize::MAX,
+        };
+        if sec.kind != Kind::Shelf && down && i + step < sec.items.len() {
+            self.sel.1 += step;
+        } else if sec.kind != Kind::Shelf && !down && i >= step {
+            self.sel.1 -= step;
+        } else if down && s + 1 < self.secs.len() {
+            self.sel = (s + 1, self.secs[s + 1].entry(true));
+        } else if !down && s > 0 {
+            self.sel = (s - 1, self.secs[s - 1].entry(false));
+        }
+    }
+
+    fn horizontal(&mut self, right: bool) {
+        let Some(sec) = self.secs.get(self.sel.0).filter(|s| s.kind != Kind::List) else { return };
+        if right && self.sel.1 + 1 < sec.items.len() {
+            self.sel.1 += 1;
+        } else if !right && self.sel.1 > 0 {
+            self.sel.1 -= 1;
+        }
+    }
+}
+
+fn group(items: Vec<Item>, songs: &str) -> Vec<Sec> {
+    let mut secs = vec![];
+    add(&mut secs, items, songs);
+    secs
+}
+
+/// Adds items as a track list first, then one shelf per entity kind, like Spotify's search and
+/// artist pages. Items already present are skipped, so pages can arrive incrementally.
+fn add(secs: &mut Vec<Sec>, items: Vec<Item>, songs: &str) {
+    for item in items {
+        if secs.iter().any(|s| s.items.iter().any(|i| i.uri == item.uri)) {
+            continue;
+        }
+        if matches!(item.kind(), "track" | "episode") {
+            match secs.iter_mut().find(|s| s.kind == Kind::List) {
+                Some(sec) => sec.items.push(item),
+                None => secs.insert(0, Sec::new(songs, Kind::List, vec![item])),
+            }
+            continue;
+        }
+        let title = match item.kind() {
+            "album" => "Albums",
+            "artist" => "Artists",
+            "playlist" => "Playlists",
+            "show" => "Podcasts",
+            other => other,
+        }
+        .to_string();
+        match secs.iter_mut().find(|s| s.title == title) {
+            Some(sec) => sec.items.push(item),
+            None => secs.push(Sec::new(title, Kind::Shelf, vec![item])),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Focus {
+    Library,
+    Main,
+    Queue,
+}
+
+/// Clickable regions, collected while drawing.
+#[derive(Clone)]
+pub enum Hit {
+    Main(usize, usize),
+    Library(usize),
+    Queue(usize),
+    /// Device picker toggle in the player bar.
+    Devices,
+    /// Lyrics toggle in the player bar.
+    Lyrics,
+    /// Row of the device picker.
+    Device(usize),
+    Cmd(Cmd),
+    Seek,
+    Volume,
+    Search,
+    Home,
+    Back,
+    ToggleQueue,
+}
+
+enum Loaded {
+    Page { generation: u64, push: bool, page: Page },
+    /// Next chunk of the page opened at `generation`.
+    Fill { generation: u64, items: Vec<Item>, more: bool, root: Option<Item> },
+    Library(Vec<Item>),
+    Status(String),
+}
+
+pub struct App {
+    api: Api,
+    tx: mpsc::UnboundedSender<Loaded>,
+    pub images: Images,
+    pub stack: Vec<Page>,
+    generation: u64,
+    /// Fetch for the current page; aborted when the user navigates away.
+    page_task: Option<AbortHandle>,
+    pub library: Vec<Item>,
+    pub lib_sel: usize,
+    pub lib_top: usize,
+    pub lib_area: Rect,
+    pub queue_sel: usize,
+    pub queue_top: usize,
+    pub queue_area: Rect,
+    focus: Focus,
+    pub np: NowPlaying,
+    np_at: Instant,
+    pub queue: Vec<Item>,
+    /// Commands queued outside input handling, sent by the event loop.
+    outbox: Vec<Cmd>,
+    /// Tracks already fetched for the queue, by uri.
+    queue_cache: std::collections::HashMap<String, Item>,
+    pub show_queue: bool,
+    pub show_library: bool,
+    /// Lyrics replace the main page while on.
+    pub show_lyrics: bool,
+    /// Lyrics of the track in `.0`; `None` or another uri while loading.
+    pub lyrics: Option<(String, Vec<proto::LyricsLine>)>,
+    /// First lyrics line drawn in the last frame.
+    pub lyrics_top: usize,
+    /// Manual scroll position and when it was set; synced lyrics follow the song again
+    /// `LYRICS_FOLLOW` after the last scroll.
+    pub lyrics_scroll: Option<(usize, Instant)>,
+    /// Key help overlay; any key or click closes it.
+    pub help: bool,
+    /// Connect device picker overlay and its selection.
+    pub devices_open: bool,
+    pub dev_sel: usize,
+    /// Last `Msg::Devices`; `None` while loading.
+    pub devices: Option<Vec<proto::Device>>,
+    pub shuffle: bool,
+    pub repeat: bool,
+    /// Text being typed in the search box.
+    pub search: Option<String>,
+    pub status: String,
+    pub hits: Vec<(Rect, Hit)>,
+    quit: bool,
+    /// Startup found no playing context; open it if the daemon reports one before the user acts.
+    resume_pending: bool,
+}
+
+pub async fn run(mut conn: Conn) -> Result<()> {
+    proto::send(&mut conn, &Cmd::Token).await?;
+    let mut np = NowPlaying::default();
+    let tokens = loop {
+        match proto::recv::<Msg>(&mut conn).await? {
+            Some(Msg::Tokens(t)) => break t,
+            Some(Msg::State(s)) => np = s,
+            Some(Msg::Hello { .. } | Msg::Tracks(_) | Msg::Devices(_) | Msg::Lyrics { .. }) => {}
+            // Usually the network (tokens need Spotify); the daemon keeps running, so ask again.
+            Some(Msg::Error(e)) => {
+                eprintln!("daemon: {e}; retrying in 3 s (Ctrl-C to quit)");
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                proto::send(&mut conn, &Cmd::Token).await?;
+            }
+            None => bail!("daemon closed the connection"),
+        }
+    };
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (img_tx, mut img_rx) = mpsc::unbounded_channel();
+    let mut app = App {
+        api: Api::new(tokens),
+        tx,
+        images: Images::new(img_tx),
+        stack: vec![],
+        generation: 0,
+        page_task: None,
+        library: vec![],
+        lib_sel: 0,
+        lib_top: 0,
+        lib_area: Rect::default(),
+        queue_sel: 0,
+        queue_top: 0,
+        queue_area: Rect::default(),
+        focus: Focus::Main,
+        np,
+        np_at: Instant::now(),
+        queue: vec![],
+        outbox: vec![],
+        queue_cache: Default::default(),
+        show_queue: true,
+        show_library: true,
+        show_lyrics: false,
+        lyrics: None,
+        lyrics_top: 0,
+        lyrics_scroll: None,
+        help: false,
+        devices_open: false,
+        dev_sel: 0,
+        devices: None,
+        shuffle: false,
+        repeat: false,
+        search: None,
+        status: String::new(),
+        hits: vec![],
+        quit: false,
+        resume_pending: false,
+    };
+    // Resume like the desktop app: the playing context, else the last page, else home.
+    let playing = Some(Item::from_context(&app.np.context)).filter(Item::browsable);
+    app.resume_pending = playing.is_none();
+    match playing.map(|i| (i, Some(app.np.uri.clone()))).or_else(|| last_page().map(|i| (i, None))) {
+        Some((item, focus)) => app.open_at(item, focus),
+        None => app.home(),
+    }
+    app.load_library();
+    app.load_queue();
+
+    let mut terminal = ratatui::init();
+    execute!(std::io::stdout(), EnableMouseCapture)?;
+    let res = event_loop(&mut terminal, &mut app, &mut conn, &mut rx, &mut img_rx).await;
+    save_last_page(app.page().and_then(|p| p.header.as_ref()));
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    ratatui::restore();
+    res
+}
+
+async fn event_loop(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    conn: &mut Conn,
+    rx: &mut mpsc::UnboundedReceiver<Loaded>,
+    img_rx: &mut mpsc::UnboundedReceiver<Done>,
+) -> Result<()> {
+    let mut events = EventStream::new();
+    let mut redraw = tokio::time::interval(Duration::from_millis(500));
+    let mut refresh = tokio::time::interval(TOKEN_REFRESH);
+    refresh.tick().await;
+    let mut dirty = true;
+    while !app.quit {
+        if dirty {
+            terminal.draw(|f| draw::draw(f, app))?;
+        }
+        dirty = true;
+        let cmds = tokio::select! {
+            ev = events.next() => match ev {
+                Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
+                    app.resume_pending = false;
+                    app.key(key)
+                }
+                // Terminals report every pointer motion; redrawing (and re-encoding covers) on each one lags clicks.
+                Some(Ok(Event::Mouse(MouseEvent { kind: MouseEventKind::Moved, .. }))) => {
+                    dirty = false;
+                    vec![]
+                }
+                Some(Ok(Event::Mouse(mouse))) => {
+                    app.resume_pending = false;
+                    app.mouse(mouse)
+                }
+                Some(Err(e)) => return Err(e.into()),
+                None => return Ok(()),
+                _ => vec![],
+            },
+            msg = proto::recv::<Msg>(conn) => {
+                match msg? {
+                    Some(Msg::State(s)) => {
+                        let queue_changed = (&s.uri, &s.context, &s.next) != (&app.np.uri, &app.np.context, &app.np.next);
+                        // The daemon restores the last playback a few seconds after it starts.
+                        if app.resume_pending && let Some(item) = Some(Item::from_context(&s.context)).filter(Item::browsable) {
+                            app.resume_pending = false;
+                            app.open_at(item, Some(s.uri.clone()));
+                        }
+                        (app.np, app.np_at) = (s, Instant::now());
+                        app.request_lyrics();
+                        // After the assignment: the fallback reads `np.next`.
+                        if queue_changed {
+                            app.load_queue();
+                        }
+                    }
+                    Some(Msg::Tokens(t)) => *app.api.tokens.write().unwrap() = t,
+                    Some(Msg::Lyrics { uri, lines }) => {
+                        if uri == app.np.uri {
+                            app.lyrics = Some((uri, lines));
+                        }
+                    }
+                    Some(Msg::Devices(devices)) => {
+                        app.dev_sel = devices.iter().position(|d| d.active).unwrap_or(0);
+                        app.devices = Some(devices);
+                    }
+                    Some(Msg::Tracks(items)) => {
+                        app.queue_cache.extend(items.into_iter().map(|i| (i.uri.clone(), i)));
+                        app.show_queue_window();
+                    }
+                    Some(Msg::Hello { .. }) => {}
+                    Some(Msg::Error(e)) => {
+                        app.status = e;
+                        // Undo an optimistic queue removal that failed.
+                        app.show_queue_window();
+                    }
+                    None => bail!("daemon closed the connection"),
+                }
+                vec![]
+            }
+            Some(loaded) = rx.recv() => {
+                match loaded {
+                    Loaded::Page { generation, push, page } if generation == app.generation => {
+                        if !push {
+                            app.stack.clear();
+                        }
+                        app.stack.push(page);
+                        app.focus = Focus::Main;
+                        app.status.clear();
+                    }
+                    Loaded::Fill { generation, items, more, root } if generation == app.generation => {
+                        if let Some(page) = app.stack.last_mut() {
+                            let songs = if page.context.as_deref().is_some_and(|c| c.starts_with("spotify:artist:")) { "Popular" } else { "Songs" };
+                            add(&mut page.secs, items, songs);
+                            page.loading = more;
+                            if let Some(root) = root.filter(|r| page.header.as_ref().is_some_and(|h| h.name.is_empty() && h.uri == r.uri)) {
+                                page.title = root.name.clone();
+                                page.header = Some(root);
+                            }
+                            if let Some(uri) = page.focus.clone()
+                                && let Some(sel) = page.secs.iter().enumerate().find_map(|(s, sec)| sec.items.iter().position(|i| i.uri == uri).map(|i| (s, i)))
+                            {
+                                page.sel = sel;
+                                page.focus = None;
+                            }
+                        }
+                        if !more {
+                            app.status.clear();
+                        }
+                    }
+                    Loaded::Page { .. } | Loaded::Fill { .. } => {}
+                    Loaded::Library(items) => app.library = items,
+                    Loaded::Status(s) => app.status = s,
+                }
+                vec![]
+            }
+            Some(done) = img_rx.recv() => {
+                app.images.done(done);
+                vec![]
+            }
+            _ = refresh.tick() => vec![Cmd::Token],
+            _ = redraw.tick() => vec![],
+        };
+        for cmd in cmds.into_iter().chain(std::mem::take(&mut app.outbox)) {
+            proto::send(conn, &cmd).await?;
+        }
+    }
+    Ok(())
+}
+
+impl App {
+    fn spawn<F>(&self, fetch: F) -> AbortHandle
+    where
+        F: Future<Output = Result<Loaded>> + Send + 'static,
+    {
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(fetch.await.unwrap_or_else(|e| Loaded::Status(format!("{e:#}"))));
+        })
+        .abort_handle()
+    }
+
+    /// Cancels the in-flight page fetch and starts tracking a new navigation.
+    fn navigate(&mut self) -> u64 {
+        if let Some(task) = self.page_task.take() {
+            task.abort();
+        }
+        self.generation += 1;
+        self.generation
+    }
+
+    /// Fetches a page in the background; `generation` drops results of navigation the user already left.
+    fn load<F>(&mut self, push: bool, fetch: F)
+    where
+        F: Future<Output = Result<Page>> + Send + 'static,
+    {
+        let generation = self.navigate();
+        self.status = "loading…".into();
+        self.page_task = Some(self.spawn(async move { Ok(Loaded::Page { generation, push, page: fetch.await? }) }));
+    }
+
+    fn home(&mut self) {
+        let api = self.api.clone();
+        self.load(false, async move {
+            // The untitled first section is Spotify's shortcuts block.
+            let secs = api
+                .home()
+                .await?
+                .into_iter()
+                .enumerate()
+                .map(|(i, mut s)| {
+                    if i == 0 && s.title.is_empty() {
+                        // Spotify shows at most 8 shortcuts.
+                        s.items.truncate(8);
+                        return Sec::new(s.title, Kind::Grid, s.items);
+                    }
+                    Sec::new(s.title, Kind::Shelf, s.items)
+                })
+                .collect();
+            Ok(Page::new("Home", None, secs))
+        });
+    }
+
+    fn load_library(&self) {
+        let api = self.api.clone();
+        self.spawn(async move { Ok(Loaded::Library(api.library().await?)) });
+    }
+
+    /// Upcoming tracks shown, from the daemon's Connect cluster (`NowPlaying.next`): the same queue
+    /// the official clients show. The Web API queue lags behind context changes and is empty while
+    /// no device is active.
+    fn queue_window(&self) -> Vec<String> {
+        self.np.next.iter().take(QUEUE_LEN).cloned().collect()
+    }
+
+    fn show_queue_window(&mut self) {
+        self.queue = self.queue_window().iter().filter_map(|u| self.queue_cache.get(u).cloned()).collect();
+        self.queue_sel = self.queue_sel.min(self.queue.len().saturating_sub(1));
+    }
+
+    fn toggle_lyrics(&mut self) {
+        self.show_lyrics = !self.show_lyrics;
+        self.lyrics_scroll = None;
+        self.request_lyrics();
+    }
+
+    /// Scrolls the lyrics by `lines` from what was last drawn.
+    fn scroll_lyrics(&mut self, lines: isize) {
+        let len = self.lyrics.as_ref().map_or(0, |(_, l)| l.len());
+        let top = self.lyrics_top.saturating_add_signed(lines).min(len.saturating_sub(1));
+        self.lyrics_scroll = Some((top, Instant::now()));
+    }
+
+    /// Asks the daemon for the playing track's lyrics while they are shown and not loaded yet.
+    fn request_lyrics(&mut self) {
+        let loaded = self.lyrics.as_ref().is_some_and(|(uri, _)| *uri == self.np.uri);
+        if self.show_lyrics && !self.np.uri.is_empty() && !loaded {
+            self.lyrics = None;
+            self.lyrics_scroll = None;
+            self.outbox.push(Cmd::Lyrics(self.np.uri.clone()));
+        }
+    }
+
+    fn open_devices(&mut self) {
+        self.devices_open = true;
+        self.devices = None;
+        self.outbox.push(Cmd::Devices);
+    }
+
+    fn pick_device(&mut self, i: usize) -> Vec<Cmd> {
+        self.devices_open = false;
+        let Some(d) = self.devices.as_ref().and_then(|d| d.get(i)) else { return vec![] };
+        if d.active {
+            return vec![];
+        }
+        self.status = format!("Playing on {}", d.name);
+        vec![Cmd::Transfer(d.id.clone())]
+    }
+
+    fn move_queue(&mut self, down: bool) {
+        self.queue_sel = if down { (self.queue_sel + 1).min(self.queue.len().saturating_sub(1)) } else { self.queue_sel.saturating_sub(1) };
+    }
+
+    /// Tab order: library, main, queue (side panels only when shown).
+    fn cycle_focus(&mut self, forward: bool) {
+        let order: Vec<Focus> = [(self.show_library, Focus::Library), (true, Focus::Main), (self.show_queue, Focus::Queue)]
+            .into_iter()
+            .filter_map(|(shown, f)| shown.then_some(f))
+            .collect();
+        let i = order.iter().position(|f| *f == self.focus).unwrap_or(1);
+        let n = order.len();
+        self.focus = order[if forward { (i + 1) % n } else { (i + n - 1) % n }];
+    }
+
+    fn toggle_library(&mut self) {
+        self.show_library = !self.show_library;
+        if !self.show_library && self.focus == Focus::Library {
+            self.focus = Focus::Main;
+        }
+    }
+
+    fn toggle_queue(&mut self) {
+        self.show_queue = !self.show_queue;
+        if !self.show_queue && self.focus == Focus::Queue {
+            self.focus = Focus::Main;
+        }
+    }
+
+    fn load_queue(&mut self) {
+        self.show_queue_window();
+        let missing: Vec<String> = self.queue_window().into_iter().filter(|u| !self.queue_cache.contains_key(u)).collect();
+        if missing.is_empty() {
+            return;
+        }
+        self.outbox.push(Cmd::Tracks(missing));
+    }
+
+    fn search(&mut self, term: String) {
+        let api = self.api.clone();
+        self.load(true, async move {
+            let items = api.search(&term).await?;
+            Ok(Page::new(format!("Search: {term}"), None, group(items, "Songs")))
+        });
+    }
+
+    fn open(&mut self, item: Item) {
+        self.open_at(item, None);
+    }
+
+    /// Shows the page at once with the header we already have, then streams tracks in chunks,
+    /// selecting `focus` when it arrives.
+    fn open_at(&mut self, item: Item, focus: Option<String>) {
+        let generation = self.navigate();
+        let mut page = Page::new(item.name.clone(), Some(item.clone()), vec![]);
+        page.loading = true;
+        page.focus = focus;
+        self.stack.push(page);
+        self.focus = Focus::Main;
+        self.status = "loading…".into();
+        let (api, tx) = (self.api.clone(), self.tx.clone());
+        let task = tokio::spawn(async move {
+            // Small first chunk so the tracklist shows up fast; bigger ones after.
+            let (mut offset, mut limit) = (0, 30);
+            loop {
+                let (items, more, root) = match api.open(&item.uri, offset, limit).await {
+                    Ok(page) => page,
+                    Err(e) => {
+                        let _ = tx.send(Loaded::Fill { generation, items: vec![], more: false, root: None });
+                        let _ = tx.send(Loaded::Status(format!("{e:#}")));
+                        return;
+                    }
+                };
+                if tx.send(Loaded::Fill { generation, items, more, root }).is_err() || !more {
+                    return;
+                }
+                offset += limit;
+                limit = 100;
+            }
+        });
+        self.page_task = Some(task.abort_handle());
+    }
+
+    /// Enter on an item: browsable entities open a page, everything else plays.
+    fn activate(&mut self, item: Item, context: Option<String>) -> Vec<Cmd> {
+        match item.kind() {
+            _ if item.browsable() => {
+                self.open(item);
+                vec![]
+            }
+            "track" | "episode" => vec![match context {
+                Some(context) => Cmd::Load { context_uri: Some(context), tracks: vec![], track: Some(item.uri) },
+                None => Cmd::Load { context_uri: None, tracks: vec![item.uri], track: None },
+            }],
+            _ => vec![play_context(item.uri)],
+        }
+    }
+
+    /// Esc: cancels any fetch in flight, then leaves the page.
+    fn back(&mut self) {
+        let loading = self.page_task.as_ref().is_some_and(|t| !t.is_finished());
+        self.navigate();
+        if let Some(page) = self.stack.last_mut() {
+            page.loading = false;
+        }
+        if loading {
+            self.status = "cancelled".into();
+        }
+        if self.stack.len() > 1 {
+            self.stack.pop();
+        } else if self.page().is_some_and(|p| p.header.is_some()) {
+            // Resumed straight into a page: there is nothing below it, so back means home.
+            self.home();
+        }
+    }
+
+    pub fn page(&self) -> Option<&Page> {
+        self.stack.last()
+    }
+
+    pub fn position(&self) -> u32 {
+        let elapsed = if self.np.playing { self.np_at.elapsed().as_millis() as u32 } else { 0 };
+        (self.np.position_ms + elapsed).min(self.np.duration_ms)
+    }
+
+    fn selected(&self) -> Option<Item> {
+        match self.focus {
+            Focus::Library => self.library.get(self.lib_sel).cloned(),
+            Focus::Main => self.page().and_then(Page::selected).cloned(),
+            Focus::Queue => self.queue.get(self.queue_sel).cloned(),
+        }
+    }
+
+    fn context(&self) -> Option<String> {
+        match self.focus {
+            Focus::Library => None,
+            Focus::Main => self.page().and_then(|p| p.context.clone()),
+            // Jumping ahead in the queue keeps playing the current context where possible.
+            Focus::Queue => Some(self.np.context.clone()).filter(|c| !c.is_empty()),
+        }
+    }
+
+    fn move_library(&mut self, down: bool) {
+        self.lib_sel = if down { (self.lib_sel + 1).min(self.library.len().saturating_sub(1)) } else { self.lib_sel.saturating_sub(1) };
+    }
+
+    /// Handles a key press; returns the commands to send to the daemon.
+    fn key(&mut self, key: KeyEvent) -> Vec<Cmd> {
+        if self.help {
+            self.help = false;
+            return vec![];
+        }
+        if self.devices_open {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => self.dev_sel = (self.dev_sel + 1).min(self.devices.as_ref().map_or(0, |d| d.len().saturating_sub(1))),
+                KeyCode::Char('k') | KeyCode::Up => self.dev_sel = self.dev_sel.saturating_sub(1),
+                KeyCode::Enter => return self.pick_device(self.dev_sel),
+                KeyCode::Esc | KeyCode::Char('c' | 'q') => self.devices_open = false,
+                _ => {}
+            }
+            return vec![];
+        }
+        if let Some(term) = &mut self.search {
+            match key.code {
+                KeyCode::Char(c) => term.push(c),
+                KeyCode::Backspace => _ = term.pop(),
+                KeyCode::Esc => self.search = None,
+                KeyCode::Enter if !term.is_empty() => {
+                    let term = std::mem::take(term);
+                    self.search = None;
+                    self.search(term);
+                }
+                _ => {}
+            }
+            return vec![];
+        }
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let main = self.focus == Focus::Main;
+        let queue = self.focus == Focus::Queue;
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
+            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('Q') => {
+                self.quit = true;
+                return vec![Cmd::Shutdown];
+            }
+            KeyCode::Tab => self.cycle_focus(true),
+            KeyCode::BackTab => self.cycle_focus(false),
+            KeyCode::Char('/') => self.search = Some(String::new()),
+            KeyCode::Char('g') => self.home(),
+            KeyCode::Char(']') => self.toggle_queue(),
+            KeyCode::Char('[') => self.toggle_library(),
+            KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('c') => self.open_devices(),
+            KeyCode::Char('y') => self.toggle_lyrics(),
+            KeyCode::Char('j') | KeyCode::Down if main && self.show_lyrics => self.scroll_lyrics(1),
+            KeyCode::Char('k') | KeyCode::Up if main && self.show_lyrics => self.scroll_lyrics(-1),
+            KeyCode::Esc if self.show_lyrics => self.show_lyrics = false,
+            KeyCode::Esc | KeyCode::Backspace => self.back(),
+            KeyCode::Right if shift => return vec![Cmd::Seek(self.position() + SEEK_STEP)],
+            KeyCode::Char('L') => return vec![Cmd::Seek(self.position() + SEEK_STEP)],
+            KeyCode::Left if shift => return vec![Cmd::Seek(self.position().saturating_sub(SEEK_STEP))],
+            KeyCode::Char('H') => return vec![Cmd::Seek(self.position().saturating_sub(SEEK_STEP))],
+            KeyCode::Char('j') | KeyCode::Down if main => self.stack.last_mut().into_iter().for_each(|p| p.vertical(true)),
+            KeyCode::Char('k') | KeyCode::Up if main => self.stack.last_mut().into_iter().for_each(|p| p.vertical(false)),
+            KeyCode::Char('l') | KeyCode::Right if main => self.stack.last_mut().into_iter().for_each(|p| p.horizontal(true)),
+            KeyCode::Char('h') | KeyCode::Left if main => self.stack.last_mut().into_iter().for_each(|p| p.horizontal(false)),
+            KeyCode::Char('j') | KeyCode::Down if queue => self.move_queue(true),
+            KeyCode::Char('k') | KeyCode::Up if queue => self.move_queue(false),
+            KeyCode::Char('h') | KeyCode::Left if queue => self.focus = Focus::Main,
+            KeyCode::Char('l') | KeyCode::Right if queue => {}
+            KeyCode::Char('J') | KeyCode::Char('K') if queue => {
+                let down = key.code == KeyCode::Char('J');
+                let (i, j) = (self.queue_sel, if down { self.queue_sel + 1 } else { self.queue_sel.wrapping_sub(1) });
+                if let (Some(item), true) = (self.queue.get(i).cloned(), j < self.queue.len()) {
+                    let nth = self.queue[..i].iter().filter(|q| q.uri == item.uri).count();
+                    // Shown moved at once; the cluster update confirms it (an error restores it).
+                    self.queue.swap(i, j);
+                    self.queue_sel = j;
+                    return vec![Cmd::MoveQueue { uri: item.uri, nth, down }];
+                }
+            }
+            KeyCode::Char('d') | KeyCode::Delete if queue => {
+                if let Some(item) = self.queue.get(self.queue_sel).cloned() {
+                    // Occurrence among equal uris before it: the same track can be queued twice.
+                    let nth = self.queue[..self.queue_sel].iter().filter(|i| i.uri == item.uri).count();
+                    // Shown gone at once; the cluster update confirms it (or brings it back on failure).
+                    self.queue.remove(self.queue_sel);
+                    self.queue_sel = self.queue_sel.min(self.queue.len().saturating_sub(1));
+                    self.status = format!("Removed from queue: {}", item.name);
+                    return vec![Cmd::Unqueue { uri: item.uri, nth }];
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.move_library(true),
+            KeyCode::Char('k') | KeyCode::Up => self.move_library(false),
+            KeyCode::Char('l') | KeyCode::Right => self.focus = Focus::Main,
+            KeyCode::Enter => {
+                if let Some(item) = self.selected() {
+                    let context = self.context();
+                    return self.activate(item, context);
+                }
+            }
+            KeyCode::Char('p') => {
+                if let Some(item) = self.selected() {
+                    return vec![play_context(item.uri)];
+                }
+            }
+            KeyCode::Char('P') => {
+                if let Some(context) = self.page().and_then(|p| p.context.clone()) {
+                    return vec![play_context(context)];
+                }
+            }
+            KeyCode::Char('a') => {
+                if let Some(item) = self.selected().filter(|i| matches!(i.kind(), "track" | "episode")) {
+                    // Failures come back as `Msg::Error` and replace this.
+                    self.status = format!("Added to queue: {}", item.name);
+                    return vec![Cmd::Queue(item.uri)];
+                }
+            }
+            KeyCode::Char(' ') => return vec![Cmd::PlayPause],
+            KeyCode::Char('n') => return vec![Cmd::Next],
+            KeyCode::Char('b') => return vec![Cmd::Prev],
+            KeyCode::Char('+' | '=') => return vec![Cmd::Volume(self.np.volume.saturating_add(VOLUME_STEP))],
+            KeyCode::Char('-') => return vec![Cmd::Volume(self.np.volume.saturating_sub(VOLUME_STEP))],
+            KeyCode::Char('s') => {
+                self.shuffle = !self.shuffle;
+                return vec![Cmd::Shuffle(self.shuffle)];
+            }
+            KeyCode::Char('r') => {
+                self.repeat = !self.repeat;
+                return vec![Cmd::Repeat(self.repeat)];
+            }
+            _ => {}
+        }
+        vec![]
+    }
+
+    fn mouse(&mut self, m: MouseEvent) -> Vec<Cmd> {
+        let at = |r: &Rect| r.contains((m.column, m.row).into());
+        let over_library = at(&self.lib_area);
+        if self.help && matches!(m.kind, MouseEventKind::Down(_)) {
+            self.help = false;
+            return vec![];
+        }
+        if self.devices_open && matches!(m.kind, MouseEventKind::Down(_)) {
+            // A row transfers; anything else just closes the picker.
+            if let Some((_, Hit::Device(i))) = self.hits.iter().rev().find(|(r, _)| at(r)).cloned() {
+                return self.pick_device(i);
+            }
+            self.devices_open = false;
+            return vec![];
+        }
+        match m.kind {
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                let down = m.kind == MouseEventKind::ScrollDown;
+                if over_library {
+                    self.move_library(down);
+                    self.lib_top = self.lib_sel.min(self.lib_top);
+                } else if at(&self.queue_area) {
+                    self.move_queue(down);
+                } else if self.show_lyrics {
+                    self.scroll_lyrics(if down { 3 } else { -3 });
+                } else if let Some(page) = self.stack.last_mut() {
+                    page.vertical(down);
+                }
+                vec![]
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some((rect, hit)) = self.hits.iter().rev().find(|(r, _)| at(r)).cloned() else { return vec![] };
+                let ratio = (m.column - rect.x) as f64 / rect.width.max(1) as f64;
+                match hit {
+                    Hit::Main(s, i) => {
+                        self.focus = Focus::Main;
+                        let Some(page) = self.stack.last_mut() else { return vec![] };
+                        let again = page.sel == (s, i);
+                        page.sel = (s, i);
+                        let item = page.secs[s].items[i].clone();
+                        // Cards open on first click; track rows select first and play on the second, like Spotify.
+                        if again || page.secs[s].kind != Kind::List {
+                            let context = page.context.clone();
+                            return self.activate(item, context);
+                        }
+                    }
+                    Hit::Devices => self.open_devices(),
+                    Hit::Lyrics => self.toggle_lyrics(),
+                    Hit::Device(i) => return self.pick_device(i),
+                    Hit::Queue(i) => {
+                        let again = self.focus == Focus::Queue && self.queue_sel == i;
+                        self.focus = Focus::Queue;
+                        self.queue_sel = i;
+                        // Like track rows: select first, play on the second click.
+                        if again && let Some(item) = self.queue.get(i).cloned() {
+                            let context = self.context();
+                            return self.activate(item, context);
+                        }
+                    }
+                    Hit::Library(i) => {
+                        self.focus = Focus::Library;
+                        self.lib_sel = i;
+                        if let Some(item) = self.library.get(i).cloned() {
+                            return self.activate(item, None);
+                        }
+                    }
+                    Hit::Cmd(cmd) => {
+                        match cmd {
+                            Cmd::Shuffle(on) => self.shuffle = on,
+                            Cmd::Repeat(on) => self.repeat = on,
+                            _ => {}
+                        }
+                        return vec![cmd];
+                    }
+                    Hit::Seek => return vec![Cmd::Seek((ratio * self.np.duration_ms as f64) as u32)],
+                    Hit::Volume => return vec![Cmd::Volume((ratio * u16::MAX as f64) as u16)],
+                    Hit::Search => self.search = Some(String::new()),
+                    Hit::Home => self.home(),
+                    Hit::Back => self.back(),
+                    Hit::ToggleQueue => self.toggle_queue(),
+                }
+                vec![]
+            }
+            _ => vec![],
+        }
+    }
+}
+
+fn last_page_path() -> std::path::PathBuf {
+    crate::auth::config_dir().join("last-page.json")
+}
+
+fn last_page() -> Option<Item> {
+    serde_json::from_slice(&std::fs::read(last_page_path()).ok()?).ok()
+}
+
+/// Remembers the open playlist/album/artist for the next start; home clears it.
+fn save_last_page(item: Option<&Item>) {
+    let _ = match item {
+        Some(item) => serde_json::to_vec(item).map_err(std::io::Error::other).and_then(|b| std::fs::write(last_page_path(), b)),
+        None => std::fs::remove_file(last_page_path()),
+    };
+}
+
+fn play_context(uri: String) -> Cmd {
+    Cmd::Load { context_uri: Some(uri), tracks: vec![], track: None }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(uri: &str) -> Item {
+        Item { name: uri.into(), ..Item::from_uri(uri) }
+    }
+
+    #[test]
+    fn group_and_navigate() {
+        let items = ["spotify:track:1", "spotify:album:a", "spotify:track:2", "spotify:artist:x", "spotify:album:b"];
+        let mut page = Page::new("t", None, group(items.map(item).to_vec(), "Songs"));
+        let titles: Vec<_> = page.secs.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, ["Songs", "Albums", "Artists"]);
+        page.vertical(true);
+        assert_eq!(page.sel, (0, 1));
+        page.vertical(true);
+        page.horizontal(true);
+        assert_eq!(page.selected().unwrap().uri, "spotify:album:b");
+        page.vertical(false);
+        assert_eq!(page.sel, (0, 1));
+        assert!(Page::new("t", None, group(vec![item("spotify:album:a")], "Songs")).secs[0].kind == Kind::Shelf);
+
+        let mut grid = Sec::new("", Kind::Grid, (0..7).map(|i| item(&format!("spotify:album:{i}"))).collect());
+        grid.cols = 4;
+        let mut page = Page::new("t", None, vec![grid, Sec::new("S", Kind::Shelf, vec![item("spotify:album:z")])]);
+        page.horizontal(true);
+        page.vertical(true);
+        assert_eq!(page.sel, (0, 5));
+        page.vertical(true);
+        assert_eq!(page.sel, (1, 0));
+        page.vertical(false);
+        assert_eq!(page.sel, (0, 4));
+    }
+}

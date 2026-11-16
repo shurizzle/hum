@@ -1,0 +1,79 @@
+# Builds hum for every `vX.Y.Z` tag and attaches the binaries to that release: macOS and Linux,
+# aarch64 and x86_64. Linux builds are fully static (musl). Archives are named
+# `hum-<target triple>.tar.gz`, the layout cargo-binstall expects (Cargo.toml metadata). A manual run only uploads them as
+# workflow artifacts. Electron, the playback engine, is not included: hum downloads it at first
+# start (signed `ecs-*` releases, see docs/playback.md).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - # Cross-compiled on the arm runner; Xcode's clang builds the C parts for x86_64 too.
+            runner: macos-latest
+            target: x86_64-apple-darwin
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: |
+          rustup target add "$TARGET"
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update && sudo apt-get install -y musl-tools; fi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            # musl-gcc compiles the C parts (aws-lc, lmdb) against musl too.
+            export CC=musl-gcc RUSTFLAGS="-C target-feature=+crt-static"
+          fi
+          cargo build --release --locked --target "$TARGET"
+      - name: Package
+        run: |
+          bin="target/$TARGET/release/hum"
+          file "$bin"
+          # `file` says "statically linked", or "static-pie linked" for PIE builds.
+          if [ "$RUNNER_OS" = Linux ] && ! file "$bin" | grep -Eq "static(ally|-pie) linked"; then
+            echo "not static"; exit 1
+          fi
+          tar -C "target/$TARGET/release" -czf "hum-${{ matrix.target }}.tar.gz" hum
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hum-${{ matrix.target }}
+          path: hum-${{ matrix.target }}.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+      - name: Attach to release
+        run: |
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 \
+            || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "hum $TAG" --generate-notes
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber hum-*.tar.gz

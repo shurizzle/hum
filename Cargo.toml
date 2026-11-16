@@ -1,0 +1,44 @@
+[package]
+name = "hum-tui"
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/shurizzle/hum"
+
+# Prebuilt binaries from .github/workflows/release.yml (`hum-<target>.tar.gz` on `vX.Y.Z` releases).
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/hum-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "hum{ binary-ext }"
+
+[dependencies]
+anyhow = "1.0.104"
+crossterm = { version = "0.29", features = ["event-stream"] }
+dirs = "7.0.0"
+env_logger = "0.11.11"
+futures-util = { version = "0.3.34", features = ["sink"] }
+heed = { version = "0.22", default-features = false }
+image = "0.25.10"
+librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-oauth = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-protocol = "0.8"
+log = "0.4.35"
+oauth2 = { version = "5", default-features = false }
+open = "5"
+protobuf = "3.7.2"
+ratatui = "0.30"
+ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults", "tokio"] }
+regex = "1.13.1"
+reqwest = { version = "0.13", features = ["json", "stream", "form"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7.20", features = ["codec"] }
+
+[[bin]]
+name = "hum"
+path = "src/main.rs"
+
+# Image decoding/encoding is unusably slow unoptimized; keep our own crate debuggable.
+[profile.dev.package."*"]
+opt-level = 3
