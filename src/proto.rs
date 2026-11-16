@@ -1,0 +1,159 @@
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use tokio::net::UnixStream;
+use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+/// Client -> daemon.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum Cmd {
+    /// Play a context (playlist, album, artist, station) or a list of tracks, starting at `track`.
+    Load {
+        context_uri: Option<String>,
+        tracks: Vec<String>,
+        track: Option<String>,
+    },
+    PlayPause,
+    Next,
+    Prev,
+    Seek(u32),
+    Volume(u16),
+    Shuffle(bool),
+    Repeat(bool),
+    /// Add a track or episode to the queue; activates hum (paused) if no device is active.
+    Queue(String),
+    /// Track metadata for the queue panel; answered with `Msg::Tracks`.
+    Tracks(Vec<String>),
+    /// Remove the `nth` occurrence (0-based) of `uri` from `NowPlaying.next`.
+    Unqueue { uri: String, nth: usize },
+    /// Move the `nth` occurrence (0-based) of `uri` in `NowPlaying.next` one place down or up.
+    MoveQueue { uri: String, nth: usize, down: bool },
+    /// Lyrics of a track; answered with `Msg::Lyrics`.
+    Lyrics(String),
+    /// List the account's Connect devices; answered with `Msg::Devices`.
+    Devices,
+    /// Move playback to a Connect device, keeping it playing or paused.
+    Transfer(String),
+    Token,
+    Shutdown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Tokens {
+    /// login5 token of the librespot session: internal APIs (pathfinder).
+    pub access_token: String,
+    pub client_token: String,
+    /// Token of hum's developer app: public Web API.
+    pub web_token: String,
+}
+
+/// One lyrics line; `start_ms` is 0 for every line of unsynced lyrics.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct LyricsLine {
+    pub start_ms: u32,
+    pub words: String,
+}
+
+/// A Spotify Connect device of the account.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Device {
+    pub id: String,
+    pub name: String,
+    /// Lowercase device type: "computer", "smartphone", "speaker", ...
+    pub kind: String,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct NowPlaying {
+    pub uri: String,
+    pub name: String,
+    pub artists: String,
+    pub album: String,
+    pub cover: String,
+    /// Playlist/album/artist the track plays from; empty for loose tracks.
+    pub context: String,
+    pub duration_ms: u32,
+    pub position_ms: u32,
+    pub playing: bool,
+    pub volume: u16,
+    /// Upcoming track uris from the account's Connect cluster (restored or mirrored playback);
+    /// the Web API queue is empty while no device is active.
+    #[serde(default)]
+    pub next: Vec<String>,
+}
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Daemon -> client. Replies carry no id: a client sends one command at a time per reply it awaits.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum Msg {
+    /// First message on every connection.
+    Hello { version: String },
+    State(NowPlaying),
+    Tokens(Tokens),
+    /// Answer to `Cmd::Tracks`, in request order, unknown tracks skipped.
+    Tracks(Vec<crate::api::Item>),
+    /// Answer to `Cmd::Lyrics`; no lines when the track has none.
+    Lyrics { uri: String, lines: Vec<LyricsLine> },
+    /// Answer to `Cmd::Devices`.
+    Devices(Vec<Device>),
+    Error(String),
+}
+
+pub type Conn = Framed<UnixStream, LengthDelimitedCodec>;
+
+pub fn socket_path() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("hum.sock")
+}
+
+/// Whether dotted version `a` is lower than `b`.
+pub fn older(a: &str, b: &str) -> bool {
+    let parse = |v: &str| v.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    parse(a) < parse(b)
+}
+
+pub fn frame(stream: UnixStream) -> Conn {
+    Framed::new(stream, LengthDelimitedCodec::new())
+}
+
+pub async fn send<T: Serialize>(conn: &mut Conn, msg: &T) -> Result<()> {
+    conn.send(tokio_util::bytes::Bytes::from(serde_json::to_vec(msg)?)).await?;
+    Ok(())
+}
+
+pub async fn recv<T: DeserializeOwned>(conn: &mut Conn) -> Result<Option<T>> {
+    match conn.next().await {
+        Some(bytes) => Ok(Some(serde_json::from_slice(&bytes?).context("bad frame")?)),
+        None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn roundtrip() {
+        let (a, b) = UnixStream::pair().unwrap();
+        let (mut a, mut b) = (frame(a), frame(b));
+        let cmd = Cmd::Load { context_uri: Some("spotify:playlist:x".into()), tracks: vec![], track: None };
+        send(&mut a, &cmd).await.unwrap();
+        assert_eq!(recv::<Cmd>(&mut b).await.unwrap(), Some(cmd));
+        drop(a);
+        assert_eq!(recv::<Cmd>(&mut b).await.unwrap(), None);
+    }
+
+    #[test]
+    fn versions() {
+        assert!(older("0.1.0", "0.2.0"));
+        assert!(older("0.9.0", "0.10.0"));
+        assert!(!older("0.2.0", "0.2.0"));
+        assert!(!older("1.0.0", "0.9.9"));
+    }
+}

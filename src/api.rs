@@ -1,0 +1,394 @@
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
+
+use anyhow::{Context, Result, bail};
+use futures_util::future::join_all;
+use regex::Regex;
+use serde_json::{Value, json};
+
+use crate::{auth, cache::Cache, proto::Tokens};
+
+const PATHFINDER: &str = "https://api-partner.spotify.com/pathfinder/v2/query";
+const WEB_PLAYER: &str = "https://open.spotify.com/";
+const CDN: &str = "https://open.spotifycdn.com/cdn/build/web-player/";
+const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36";
+/// Disk cache lifetimes; playlists, home, library and search are never cached.
+const ALBUM_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+const ARTIST_TTL: Duration = Duration::from_secs(24 * 3600);
+const OPS: &[&str] = &["home", "searchDesktop", "fetchPlaylist", "getAlbum", "queryArtistOverview", "libraryV3", "fetchLibraryTracks"];
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Item {
+    pub uri: String,
+    pub name: String,
+    pub sub: String,
+    pub image: Option<String>,
+    /// Editorial description (playlists), shown under cards like Spotify does.
+    #[serde(default)]
+    pub desc: String,
+}
+
+impl Item {
+    pub fn kind(&self) -> &str {
+        self.uri.split(':').nth(1).unwrap_or("")
+    }
+
+    /// An entity known only by uri; `Api::open` fills in the rest.
+    pub fn from_uri(uri: &str) -> Self {
+        Self { uri: uri.into(), name: String::new(), sub: String::new(), image: None, desc: String::new() }
+    }
+
+    /// Page for a playback context. Artist "Popular" playback runs in a list context
+    /// (`spotify:list:popular-...:artist_<id>`, see `player::play_body`) that maps to the artist.
+    pub fn from_context(uri: &str) -> Self {
+        match uri.strip_prefix("spotify:list:").and_then(|l| l.rsplit_once(":artist_")) {
+            Some((_, id)) => Self::from_uri(&format!("spotify:artist:{id}")),
+            None => Self::from_uri(uri),
+        }
+    }
+
+    pub fn browsable(&self) -> bool {
+        matches!(self.kind(), "playlist" | "album" | "artist" | "collection")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Section {
+    pub title: String,
+    pub items: Vec<Item>,
+}
+
+#[derive(Clone)]
+pub struct Api {
+    http: reqwest::Client,
+    pub tokens: Arc<RwLock<Tokens>>,
+    hashes: Arc<RwLock<HashMap<String, String>>>,
+}
+
+impl Api {
+    pub fn new(tokens: Tokens) -> Self {
+        let hashes = std::fs::read(hashes_path())
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        Self {
+            http: reqwest::Client::builder().user_agent(UA).build().unwrap(),
+            tokens: Arc::new(RwLock::new(tokens)),
+            hashes: Arc::new(RwLock::new(hashes)),
+        }
+    }
+
+    pub async fn home(&self) -> Result<Vec<Section>> {
+        let v = self
+            .query(
+                "home",
+                json!({"timeZone": timezone(), "sp_t": "", "facet": "", "sectionItemsLimit": 10,
+                       "homeEndUserIntegration": "INTEGRATION_WEB_PLAYER", "includeHomeChapterVideoCards": false,
+                       "includeEpisodeContentRatingsV2": false}),
+            )
+            .await?;
+        let sections = v.pointer("/data/home/sectionContainer/sections/items").and_then(Value::as_array);
+        Ok(sections
+            .into_iter()
+            .flatten()
+            .filter_map(|s| {
+                let title = ["/data/title/transformedLabel", "/data/title/text"]
+                    .iter()
+                    .find_map(|p| s.pointer(p)?.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let items = items(s.get("sectionItems")?, "");
+                (!items.is_empty()).then_some(Section { title, items })
+            })
+            .collect())
+    }
+
+    pub async fn search(&self, term: &str) -> Result<Vec<Item>> {
+        let v = self
+            .query(
+                "searchDesktop",
+                json!({"searchTerm": term, "offset": 0, "limit": 10, "numberOfTopResults": 5,
+                       "includeAudiobooks": false, "includeArtistHasConcertsField": false,
+                       "includePreReleases": false, "includeLocalConcertsField": false}),
+            )
+            .await?;
+        Ok(items(&v, ""))
+    }
+
+    pub async fn library(&self) -> Result<Vec<Item>> {
+        let v = self
+            .query(
+                "libraryV3",
+                json!({"filters": [], "order": null, "textFilter": "", "features": ["LIKED_SONGS", "YOUR_EPISODES"],
+                       "limit": 50, "offset": 0, "flatten": false, "expandedFolders": [], "folderUri": null,
+                       "includeFoldersWithoutChildren": true}),
+            )
+            .await?;
+        Ok(items(&v, ""))
+    }
+
+    /// One page of a playlist, album, liked songs or artist, whether more pages follow, and the
+    /// opened entity itself when the response describes it.
+    pub async fn open(&self, uri: &str, offset: usize, limit: usize) -> Result<(Vec<Item>, bool, Option<Item>)> {
+        let id = uri.rsplit(':').next().unwrap_or_default();
+        let v = match uri.split(':').nth(1) {
+            Some("playlist") => {
+                self.query("fetchPlaylist", json!({"uri": uri, "offset": offset, "limit": limit, "enableWatchFeedEntrypoint": false})).await?
+            }
+            Some("album") => {
+                let vars = json!({"uri": uri, "locale": "", "offset": offset, "limit": limit});
+                self.cached_query(&format!("album:{id}:{offset}:{limit}"), ALBUM_TTL, "getAlbum", vars).await?
+            }
+            Some("collection") => self.query("fetchLibraryTracks", json!({"offset": offset, "limit": limit})).await?,
+            Some("artist") => {
+                let vars = json!({"uri": uri, "locale": "", "includePrerelease": false});
+                let v = self.cached_query(&format!("artist:{id}"), ARTIST_TTL, "queryArtistOverview", vars).await?;
+                return Ok((items(&v, uri), false, root(&v, uri)));
+            }
+            _ => return Ok((vec![], false, None)),
+        };
+        let items = items(&v, uri);
+        // Duplicates are merged, so a full page can count slightly fewer tracks than `limit`.
+        let tracks = items.iter().filter(|i| i.kind() == "track" || i.kind() == "episode").count();
+        Ok((items, tracks * 10 >= limit * 9, root(&v, uri)))
+    }
+
+    /// `query` through the disk cache: a fresh entry answers without a request; when the request
+    /// fails, an expired entry is the fallback.
+    async fn cached_query(&self, key: &str, ttl: Duration, op: &str, variables: Value) -> Result<Value> {
+        let cache = Cache::global();
+        let parse = |b: Vec<u8>| serde_json::from_slice::<Value>(&b).ok();
+        if let Some(v) = cache.read_fresh(key, ttl).and_then(parse) {
+            return Ok(v);
+        }
+        match self.query(op, variables).await {
+            Ok(v) => {
+                cache.write(key, &serde_json::to_vec(&v)?);
+                Ok(v)
+            }
+            Err(e) => cache.read_any(key).and_then(parse).ok_or(e),
+        }
+    }
+
+    async fn query(&self, op: &str, variables: Value) -> Result<Value> {
+        let hash = self.hash(op).await?;
+        let (access, client) = {
+            let t = self.tokens.read().unwrap();
+            (t.access_token.clone(), t.client_token.clone())
+        };
+        let res = self
+            .http
+            .post(PATHFINDER)
+            .bearer_auth(access)
+            .header("client-token", client)
+            .header("app-platform", "WebPlayer")
+            .json(&json!({"variables": variables, "operationName": op,
+                          "extensions": {"persistedQuery": {"version": 1, "sha256Hash": hash}}}))
+            .send()
+            .await?;
+        let status = res.status();
+        let body = res.text().await?;
+        if !status.is_success() {
+            // A rotated hash surfaces as an error: drop it so the next call refetches.
+            self.hashes.write().unwrap().remove(op);
+            bail!("{op}: {status} {}", body.chars().take(200).collect::<String>());
+        }
+        Ok(serde_json::from_str(&body)?)
+    }
+
+    async fn hash(&self, op: &str) -> Result<String> {
+        if let Some(h) = self.hashes.read().unwrap().get(op) {
+            return Ok(h.clone());
+        }
+        let fresh = self.scrape_hashes().await?;
+        let mut hashes = self.hashes.write().unwrap();
+        hashes.extend(fresh);
+        let _ = std::fs::write(hashes_path(), serde_json::to_vec_pretty(&*hashes)?);
+        hashes.get(op).cloned().with_context(|| format!("no persisted query hash for {op}"))
+    }
+
+    /// Reads persisted query hashes from the web player bundle and its route chunks.
+    async fn scrape_hashes(&self) -> Result<HashMap<String, String>> {
+        let html = self.http.get(WEB_PLAYER).send().await?.text().await?;
+        let main = Regex::new(r#"https://open\.spotifycdn\.com/cdn/build/web-player/web-player\.[0-9a-f]+\.js"#)?
+            .find(&html)
+            .context("web player bundle not found")?
+            .as_str()
+            .to_string();
+        let main_js = self.http.get(&main).send().await?.text().await?;
+        let chunk_map = Regex::new(r#"\(\{([^}]*)\}\)\[e\]\|\|e\)\+"\."\+\(\{([^}]*)\}\)\[e\]\+"\.js""#)?;
+        let pair = Regex::new(r#"(\d+):"([^"]+)""#)?;
+        let mut urls = vec![];
+        if let Some(c) = chunk_map.captures(&main_js) {
+            let names: HashMap<_, _> = pair.captures_iter(&c[1]).map(|p| (p[1].to_string(), p[2].to_string())).collect();
+            for p in pair.captures_iter(&c[2]) {
+                // shortcut: only route chunks are scanned, widen if an op is missing.
+                if let Some(name) = names.get(&p[1]).filter(|n| n.contains("routes")) {
+                    urls.push(format!("{CDN}{name}.{}.js", &p[2]));
+                }
+            }
+        }
+        let chunks = join_all(urls.iter().map(|u| async move { self.http.get(u).send().await?.text().await })).await;
+        let ops = Regex::new(r#""(\w+)","(?:query|mutation)","([0-9a-f]{64})""#)?;
+        let mut out = HashMap::new();
+        for js in std::iter::once(main_js.as_str()).chain(chunks.iter().filter_map(|c| c.as_deref().ok())) {
+            for c in ops.captures_iter(js) {
+                if OPS.contains(&&c[1]) {
+                    out.insert(c[1].to_string(), c[2].to_string());
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+fn hashes_path() -> std::path::PathBuf {
+    auth::config_dir().join("hashes.json")
+}
+
+fn timezone() -> String {
+    std::fs::read_link("/etc/localtime")
+        .ok()
+        .and_then(|p| p.to_str()?.split("zoneinfo/").nth(1).map(str::to_string))
+        .unwrap_or_else(|| "UTC".into())
+}
+
+/// Collects every Spotify entity in a response, schema-agnostic. Entities are leaves, except
+/// `skip` (the entity being opened), whose children are collected instead.
+pub fn items(v: &Value, skip: &str) -> Vec<Item> {
+    fn walk(v: &Value, skip: &str, out: &mut Vec<Item>) {
+        match v {
+            Value::Array(a) => a.iter().for_each(|x| walk(x, skip, out)),
+            Value::Object(o) => {
+                if let Some(item) = as_item(o).filter(|i| i.uri != skip) {
+                    if !out.iter().any(|i| i.uri == item.uri) {
+                        out.push(item);
+                    }
+                    return;
+                }
+                o.values().for_each(|x| walk(x, skip, out));
+            }
+            _ => {}
+        }
+    }
+    let mut out = vec![];
+    walk(v, skip, &mut out);
+    out
+}
+
+fn root(v: &Value, uri: &str) -> Option<Item> {
+    items(v, "").into_iter().find(|i| i.uri == uri)
+}
+
+fn as_item(o: &serde_json::Map<String, Value>) -> Option<Item> {
+    let uri = o.get("uri")?.as_str()?;
+    let kind = uri.strip_prefix("spotify:")?.split(':').next()?;
+    if matches!(kind, "user" | "image" | "mosaic") {
+        return None;
+    }
+    let name = o.get("name").or_else(|| o.get("profile")?.get("name"))?.as_str()?;
+    let artists = o.get("artists").map(names).unwrap_or_default();
+    let owner = ["/ownerV2/data/name", "/owner/display_name", "/publisher/name"]
+        .iter()
+        .find_map(|p| Value::Object(o.clone()).pointer(p)?.as_str().map(str::to_string))
+        .unwrap_or_default();
+    // Spotify's subtitles: "Playlist • owner", "Album • artists", artists alone for tracks.
+    let label = match kind {
+        "playlist" | "collection" => "Playlist",
+        "album" => "Album",
+        "artist" => "Artist",
+        "show" => "Podcast",
+        "episode" => "Episode",
+        _ => "",
+    };
+    let who = if artists.is_empty() { owner } else { artists };
+    let sub = match (kind, label, who.is_empty()) {
+        ("track", ..) => who,
+        (_, label, true) => label.to_string(),
+        (_, label, false) => format!("{label} • {who}"),
+    };
+    let desc = o.get("description").and_then(Value::as_str).map(plain).unwrap_or_default();
+    let image = image(&Value::Object(o.clone()));
+    Some(Item { uri: uri.to_string(), name: name.to_string(), sub, image, desc })
+}
+
+/// Strips the HTML links and entities Spotify puts in playlist descriptions.
+fn plain(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.replace("&amp;", "&").replace("&#x27;", "'").replace("&#39;", "'").replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">")
+}
+
+/// Cover url closest to 300px among all `{url, width}` image sources under `v`.
+fn image(v: &Value) -> Option<String> {
+    fn walk<'a>(v: &'a Value, out: &mut Vec<(&'a str, i64)>) {
+        match v {
+            Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            Value::Object(o) => {
+                if let Some(url) = o.get("url").and_then(Value::as_str).filter(|u| u.starts_with("https://")) {
+                    out.push((url, o.get("width").and_then(Value::as_i64).unwrap_or(300)));
+                }
+                o.values().for_each(|x| walk(x, out));
+            }
+            _ => {}
+        }
+    }
+    let mut found = vec![];
+    walk(v, &mut found);
+    found.into_iter().min_by_key(|(_, w)| (w - 300).abs()).map(|(u, _)| u.to_string())
+}
+
+/// Artist names from either `[{name}]` (Web API) or `{items: [{profile: {name}}]}` (pathfinder).
+fn names(v: &Value) -> String {
+    let list = v.get("items").unwrap_or(v).as_array().cloned().unwrap_or_default();
+    list.iter()
+        .filter_map(|a| a.get("name").or_else(|| a.get("profile")?.get("name"))?.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artist_list_context_opens_artist() {
+        assert_eq!(Item::from_context("spotify:list:popular-release-segments-main-roles:artist_abc").uri, "spotify:artist:abc");
+        assert_eq!(Item::from_context("spotify:playlist:p").uri, "spotify:playlist:p");
+    }
+
+    #[test]
+    fn items_skip_root_and_stop_at_leaves() {
+        let v = json!({"data": {"playlistV2": {"uri": "spotify:playlist:p", "name": "P",
+            "ownerV2": {"data": {"uri": "spotify:user:u", "name": "me"}},
+            "content": {"items": [
+                {"itemV2": {"data": {"uri": "spotify:track:1", "name": "One",
+                    "artists": {"items": [{"uri": "spotify:artist:a", "profile": {"name": "A"}}]}}}},
+                {"itemV2": {"data": {"uri": "spotify:track:1", "name": "One"}}},
+                {"itemV2": {"data": {"uri": "spotify:track:2", "name": "Two", "artists": [{"name": "B"}, {"name": "C"}]}}}
+            ]}}}});
+        let got = items(&v, "spotify:playlist:p");
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].sub, "A");
+        assert_eq!(got[1].sub, "B, C");
+        assert_eq!(plain("<a href=\"x\">Mecna</a>, Ernia &amp; more"), "Mecna, Ernia & more");
+        let pl = json!({"uri": "spotify:playlist:q", "name": "Q", "ownerV2": {"data": {"name": "Spotify"}}});
+        assert_eq!(items(&pl, "")[0].sub, "Playlist • Spotify");
+        assert_eq!(items(&v, "")[0].uri, "spotify:playlist:p");
+        let cover = json!({"uri": "spotify:album:x", "name": "X", "coverArt": {"sources": [
+            {"url": "https://i.scdn.co/64", "width": 64}, {"url": "https://i.scdn.co/300", "width": 300},
+            {"url": "https://i.scdn.co/640", "width": 640}]}});
+        assert_eq!(items(&cover, "")[0].image.as_deref(), Some("https://i.scdn.co/300"));
+    }
+}
