@@ -10,7 +10,7 @@ Defined in `src/proto.rs`.
 
 | Variant | Effect |
 |---|---|
-| `Load { context_uri, tracks, track }` | Play a context (playlist, album, artist, station) or a track list on the `hum` device. `track` is the uri to start from. |
+| `Load { context_uri, tracks, track }` | Play a context (playlist, album, artist, station) or a track list on the `hum` device. `track` is the uri to start from. A single loose track (`tracks: [uri]`, no context) plays inside its Song Radio playlist. |
 | `PlayPause`, `Next`, `Prev` | Player (SDK) controls |
 | `Seek(ms)` | Player seek |
 | `Volume(u16)` | 0..=65535 |

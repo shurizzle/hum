@@ -168,6 +168,18 @@ async fn client(stream: UnixStream, shared: &Shared) -> Result<()> {
 async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
     let player = &shared.player;
     match cmd {
+        // A loose track plays inside its radio, so music goes on after it like in the official clients.
+        Cmd::Load { context_uri: None, tracks, track: None } if tracks.len() == 1 && tracks[0].starts_with("spotify:track:") => {
+            let played = async {
+                let radio = crate::meta::radio(&shared.session, &tracks[0]).await?;
+                player.web("/me/player/play", Some(json!({"context_uri": radio, "offset": {"uri": tracks[0]}}))).await
+            };
+            if let Err(e) = played.await {
+                // The radio may not start with its seed, or not exist: play the track alone.
+                log::warn!("radio for {}: {e:#}", tracks[0]);
+                player.web("/me/player/play", Some(json!({"uris": tracks}))).await?;
+            }
+        }
         Cmd::Load { context_uri, tracks, track } => {
             let body = match context_uri {
                 Some(uri) => match track {

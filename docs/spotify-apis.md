@@ -96,6 +96,9 @@ Daemon only (the client no longer calls it):
 - `GET /color-lyrics/v2/track/<base62 id>` (`spclient.get_lyrics`, `meta::lyrics`): what the
   official clients show. `lyrics.syncType` `LINE_SYNCED` gives each line a `startTimeMs` (string);
   `UNSYNCED` lines are shown without timing. 404 (librespot `ErrorKind::NotFound`) = no lyrics.
+- `GET /inspiredby-mix/v2/seed_to_playlist/<track uri>?response-format=json`
+  (`spclient.get_radio_for_track`, `meta::radio`): the track's "Song Radio" playlist,
+  `mediaItems[0].uri`.
 - `PUT /connect-state/v1/devices/<id>` + dealer `hm://connect-state/v1/cluster`: the Connect
   cluster (see [playback.md](playback.md)).
 - `POST /connect-state/v1/player/command/from/<our device>/to/<active device>` with

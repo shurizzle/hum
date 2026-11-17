@@ -57,7 +57,9 @@ session to the frame that owns the media player: the SDK's cross-origin iframe
 and run as page commands, not through the daemon.
 
 Daemon commands map as follows: `Load` → `PUT /me/player/play?device_id=` (context + offset uri, or
-uris), `Shuffle`/`Repeat` → `PUT /me/player/shuffle|repeat`,
+uris; a single loose track plays as `{context_uri: <its Song Radio>, offset: {uri}}` via
+`meta::radio`, so related music follows like in the official clients, falling back to the track
+alone on any error), `Shuffle`/`Repeat` → `PUT /me/player/shuffle|repeat`,
 `Devices` → `GET /me/player/devices`, `Transfer` → `PUT /me/player` (keeps play/pause),
 `Unqueue`/`MoveQueue` → Connect `set_queue` command to the active device with the cluster's next
 tracks edited (`Player::set_queue`; activates hum first if nothing is active, which makes Spotify

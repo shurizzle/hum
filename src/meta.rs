@@ -6,7 +6,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use anyhow::Result;
-use librespot_core::{Session, SpotifyId, error::ErrorKind};
+use librespot_core::{Session, SpotifyId, SpotifyUri, error::ErrorKind};
 use librespot_protocol::{
     extended_metadata::{BatchedEntityRequest, EntityRequest, ExtensionQuery},
     extension_kind::ExtensionKind,
@@ -88,6 +88,14 @@ const LYRICS_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// Lyrics of a track from Spotify's color-lyrics service (what the official clients show), through
 /// the disk cache (`lyrics:<id>`). No lines: the track has none (404).
+/// The "Song Radio" playlist seeded by a track, like the one the official clients keep playing
+/// after a loose track.
+pub async fn radio(session: &Session, uri: &str) -> Result<String> {
+    let body = session.spclient().get_radio_for_track(&SpotifyUri::from_uri(uri)?).await?;
+    let v: serde_json::Value = serde_json::from_slice(&body)?;
+    v.pointer("/mediaItems/0/uri").and_then(|u| u.as_str()).map(str::to_string).ok_or_else(|| anyhow::anyhow!("no radio for {uri}"))
+}
+
 pub async fn lyrics(session: &Session, uri: &str) -> Result<Vec<LyricsLine>> {
     let id = uri.strip_prefix("spotify:track:").ok_or_else(|| anyhow::anyhow!("no lyrics for {uri}"))?;
     let (cache, key) = (Cache::global(), format!("lyrics:{id}"));
