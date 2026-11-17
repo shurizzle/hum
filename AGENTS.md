@@ -66,8 +66,9 @@ Rust toolchain comes from Homebrew `rustup`; `cargo` lives in `/opt/homebrew/opt
 - Releases: hum is `vX.Y.Z`; signed Electron is a separate `ecs-<castLabs tag>` release made by
   `.github/workflows/ecs.yml` (never latest). Bump `player::ECS_VERSION` only after trying a new one.
 - TLS is rustls only (no OpenSSL), so Linux builds can be fully static (musl): librespot-core/oauth
-  use `rustls-tls-webpki-roots` without default features. Both ring and aws-lc-rs end up enabled, so
-  `main` installs the aws-lc-rs `CryptoProvider` first; never add `native-tls` back.
+  use `rustls-tls-webpki-roots` without default features, and so does our `reqwest` (0.12, same as
+  `oauth2`, so it is linked once). Only ring is compiled in (no aws-lc-rs); `main` installs the ring
+  `CryptoProvider` first; never add `native-tls` back.
 - `vergen` is pinned to 9.0.6 in `Cargo.lock` (9.1.0 breaks the librespot-core build script).
 - Shortcuts with known limits are marked `shortcut: <limit>, <when to upgrade>`.
 - Debugging the TUI headless: drive `./target/debug/hum` in a Python `pty` with `TERM_PROGRAM` set;

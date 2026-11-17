@@ -38,9 +38,9 @@ enum Sub {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // librespot (ring) and reqwest (aws-lc-rs) both enable a rustls backend; rustls then refuses to
-    // guess. Process-wide, before any TLS connection.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    // Only ring is compiled in; install it explicitly so a dependency enabling another backend
+    // later cannot make rustls refuse to guess. Process-wide, before any TLS connection.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     match Args::parse().cmd {
         None => {
             auth::ensure_login().await?;
