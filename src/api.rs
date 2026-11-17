@@ -106,7 +106,8 @@ impl Api {
             .collect())
     }
 
-    pub async fn search(&self, term: &str) -> Result<Vec<Item>> {
+    /// Search results as titled sections.
+    pub async fn search(&self, term: &str) -> Result<Vec<(&'static str, Vec<Item>)>> {
         let v = self
             .query(
                 "searchDesktop",
@@ -115,7 +116,25 @@ impl Api {
                        "includePreReleases": false, "includeLocalConcertsField": false}),
             )
             .await?;
-        Ok(items(&v, ""))
+        let s = v.pointer("/data/searchV2").unwrap_or(&v);
+        // The web player's "All" tab: its sections, order and sizes.
+        Ok([
+            ("Top result", "/topResultsV2/itemsV2", 1),
+            ("Songs", "/tracksV2", 4),
+            ("Artists", "/artists", 10),
+            ("Albums", "/albumsV2", 10),
+            ("Playlists", "/playlists", 10),
+            ("Podcasts", "/podcasts", 10),
+            ("Episodes", "/episodes", 10),
+        ]
+        .into_iter()
+        .map(|(title, path, n)| {
+            let mut found = s.pointer(path).map(|x| items(x, "")).unwrap_or_default();
+            found.truncate(n);
+            (title, found)
+        })
+        .filter(|(_, found)| !found.is_empty())
+        .collect())
     }
 
     pub async fn library(&self) -> Result<Vec<Item>> {

@@ -122,14 +122,7 @@ impl Page {
     }
 }
 
-fn group(items: Vec<Item>, songs: &str) -> Vec<Sec> {
-    let mut secs = vec![];
-    add(&mut secs, items, songs);
-    secs
-}
-
-/// Adds items as a track list first, then one shelf per entity kind, like Spotify's search and
-/// artist pages. Items already present are skipped, so pages can arrive incrementally.
+/// Adds items as a track list first, then one shelf per entity kind, like Spotify's artist pages. Items already present are skipped, so pages can arrive incrementally.
 fn add(secs: &mut Vec<Sec>, items: Vec<Item>, songs: &str) {
     for item in items {
         if secs.iter().any(|s| s.items.iter().any(|i| i.uri == item.uri)) {
@@ -597,8 +590,10 @@ impl App {
     fn search(&mut self, term: String) {
         let api = self.api.clone();
         self.load(true, async move {
-            let items = api.search(&term).await?;
-            Ok(Page::new(format!("Search: {term}"), None, group(items, "Songs")))
+            let secs = api.search(&term).await?.into_iter().map(|(title, items)| {
+                Sec::new(title, if title == "Songs" { Kind::List } else { Kind::Shelf }, items)
+            });
+            Ok(Page::new(format!("Search: {term}"), None, secs.collect()))
         });
     }
 
@@ -952,7 +947,9 @@ mod tests {
     #[test]
     fn group_and_navigate() {
         let items = ["spotify:track:1", "spotify:album:a", "spotify:track:2", "spotify:artist:x", "spotify:album:b"];
-        let mut page = Page::new("t", None, group(items.map(item).to_vec(), "Songs"));
+        let mut secs = vec![];
+        add(&mut secs, items.map(item).to_vec(), "Songs");
+        let mut page = Page::new("t", None, secs);
         let titles: Vec<_> = page.secs.iter().map(|s| s.title.as_str()).collect();
         assert_eq!(titles, ["Songs", "Albums", "Artists"]);
         page.vertical(true);
@@ -962,7 +959,9 @@ mod tests {
         assert_eq!(page.selected().unwrap().uri, "spotify:album:b");
         page.vertical(false);
         assert_eq!(page.sel, (0, 1));
-        assert!(Page::new("t", None, group(vec![item("spotify:album:a")], "Songs")).secs[0].kind == Kind::Shelf);
+        let mut secs = vec![];
+        add(&mut secs, vec![item("spotify:album:a")], "Songs");
+        assert!(secs[0].kind == Kind::Shelf);
 
         let mut grid = Sec::new("", Kind::Grid, (0..7).map(|i| item(&format!("spotify:album:{i}"))).collect());
         grid.cols = 4;

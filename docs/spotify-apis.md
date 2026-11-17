@@ -28,7 +28,7 @@ the official app. All of this is undocumented and can break without notice.
 | Operation | Used for | Notes |
 |---|---|---|
 | `home` | Home shelves | Requires `homeEndUserIntegration: "INTEGRATION_WEB_PLAYER"` |
-| `searchDesktop` | Search | Hash lives in the `xpui-routes-search` chunk |
+| `searchDesktop` | Search | Hash lives in the `xpui-routes-search` chunk. Sections read by key from `data.searchV2` (`topResultsV2.itemsV2`, `tracksV2`, `artists`, `albumsV2`, `playlists`, `podcasts`, `episodes`), each through `api::items` |
 | `libraryV3` | Your Library | |
 | `fetchPlaylist`, `getAlbum`, `fetchLibraryTracks` | Pages, paged by `offset`/`limit` | |
 | `queryArtistOverview` | Artist page | Not paged |

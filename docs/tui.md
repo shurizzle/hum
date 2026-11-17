@@ -15,8 +15,9 @@ Modeled on the Spotify desktop app.
   fill the width, min 20 cells each; under the name the playlist description, else
   "Playlist • owner" / "Album • artists") or a `List` (numbered track rows). A section title is
   never drawn without the block below it. Opened playlists/albums/
-  artists get a big header with cover and `▶ Play`. Search and artist results are grouped by
-  `group`/`add`: tracks first, then one shelf per kind.
+  artists get a big header with cover and `▶ Play`. Search follows the web player's "All"
+  tab: Top result (1 card), Songs (4 rows), then shelves for Artists, Albums, Playlists, Podcasts,
+  Episodes. Artist pages are grouped by `add`: tracks first, then one shelf per kind.
 - **Right** (toggle `]`): Now playing with big cover, then next in queue: the first 20 of
   `NowPlaying.next` (the Connect cluster's queue, the one the official clients show), resolved
   through the daemon (`Cmd::Tracks` → `Msg::Tracks`, spclient metadata, one request) and cached by
