@@ -44,7 +44,7 @@ pub async fn connect() -> Result<proto::Conn> {
 }
 
 /// `None` if no daemon is listening, or if the one listening spoke another protocol and got stopped.
-async fn try_connect() -> Result<Option<proto::Conn>> {
+pub async fn try_connect() -> Result<Option<proto::Conn>> {
     let Ok(stream) = UnixStream::connect(proto::socket_path()).await else { return Ok(None) };
     let mut conn = proto::frame(stream);
     // A daemon predating the handshake or the `protocol` field fails to parse here and gets replaced too. Any mismatch

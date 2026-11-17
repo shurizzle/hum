@@ -234,7 +234,7 @@ pub struct App {
     /// Last `Msg::Devices`; `None` while loading.
     pub devices: Option<Vec<proto::Device>>,
     pub shuffle: bool,
-    pub repeat: bool,
+    pub repeat: proto::Repeat,
     /// Text being typed in the search box.
     pub search: Option<String>,
     pub status: String,
@@ -251,7 +251,7 @@ pub async fn run(mut conn: Conn) -> Result<()> {
         match proto::recv::<Msg>(&mut conn).await? {
             Some(Msg::Tokens(t)) => break t,
             Some(Msg::State(s)) => np = s,
-            Some(Msg::Hello { .. } | Msg::Tracks(_) | Msg::Devices(_) | Msg::Lyrics { .. } | Msg::Library | Msg::Playlist(_)) => {}
+            Some(Msg::Hello { .. } | Msg::Tracks(_) | Msg::Devices(_) | Msg::Lyrics { .. } | Msg::Library | Msg::Playlist(_) | Msg::Log(_)) => {}
             // Usually the network (tokens need Spotify); the daemon keeps running, so ask again.
             Some(Msg::Error(e)) => {
                 eprintln!("daemon: {e}; retrying in 3 s (Ctrl-C to quit)");
@@ -295,7 +295,7 @@ pub async fn run(mut conn: Conn) -> Result<()> {
         dev_sel: 0,
         devices: None,
         shuffle: false,
-        repeat: false,
+        repeat: proto::Repeat::Off,
         search: None,
         status: String::new(),
         hits: vec![],
@@ -366,6 +366,10 @@ async fn event_loop(
                             app.resume_pending = false;
                             app.open_at(item, Some(s.uri.clone()));
                         }
+                        // Follow changes made elsewhere; a stale state must not undo a local toggle.
+                        if (s.shuffle, s.repeat) != (app.np.shuffle, app.np.repeat) {
+                            (app.shuffle, app.repeat) = (s.shuffle, s.repeat);
+                        }
                         (app.np, app.np_at) = (s, Instant::now());
                         app.check_saved(vec![app.np.uri.clone()]);
                         app.request_lyrics();
@@ -391,6 +395,7 @@ async fn event_loop(
                     Some(Msg::Library) => app.library_changed(),
                     Some(Msg::Playlist(uri)) => app.playlist_changed(&uri),
                     Some(Msg::Hello { .. }) => {}
+                    Some(Msg::Log(e)) => app.status = e,
                     Some(Msg::Error(e)) => {
                         app.status = e;
                         // Undo an optimistic queue removal that failed.
@@ -918,7 +923,7 @@ impl App {
                 return vec![Cmd::Shuffle(self.shuffle)];
             }
             KeyCode::Char('r') => {
-                self.repeat = !self.repeat;
+                self.repeat = self.repeat.cycle();
                 return vec![Cmd::Repeat(self.repeat)];
             }
             _ => {}
@@ -995,7 +1000,7 @@ impl App {
                     Hit::Cmd(cmd) => {
                         match cmd {
                             Cmd::Shuffle(on) => self.shuffle = on,
-                            Cmd::Repeat(on) => self.repeat = on,
+                            Cmd::Repeat(r) => self.repeat = r,
                             _ => {}
                         }
                         return vec![cmd];

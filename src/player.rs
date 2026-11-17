@@ -453,13 +453,19 @@ impl Mirror {
         let active = cluster.active_device_id.clone();
         let p = cluster.player_state.take().unwrap_or_default();
         let next: Vec<String> = shown(&p.next_tracks, &p.track.uri).into_iter().map(|i| p.next_tracks[i].uri.clone()).take(MAX_URIS).collect();
+        let shuffle = p.options.shuffling_context;
+        let repeat = match (p.options.repeating_track, p.options.repeating_context) {
+            (true, _) => proto::Repeat::Track,
+            (_, true) => proto::Repeat::Context,
+            _ => proto::Repeat::Off,
+        };
         // hum's own player reports its state directly, with less lag; only the queue comes from here
         // (autoplay fills it after the track starts).
         if !active.is_empty() && self.sdk_device.borrow().as_deref() == Some(active.as_str()) {
             self.remote.store(false, Ordering::SeqCst);
             self.state.send_if_modified(|s| {
-                let changed = s.next != next;
-                s.next = next;
+                let changed = (&s.next, s.shuffle, s.repeat) != (&next, shuffle, repeat);
+                (s.next, s.shuffle, s.repeat) = (next, shuffle, repeat);
                 changed
             });
             return Ok(());
@@ -477,7 +483,7 @@ impl Mirror {
         let playing = remote && p.is_playing && !p.is_paused;
         let mut position = p.position_as_of_timestamp;
         if playing {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+            let now = proto::now_ms() as i64;
             position += (now - p.timestamp).max(0);
         }
         let position = position.clamp(0, p.duration.max(0)) as u32;
@@ -492,8 +498,10 @@ impl Mirror {
         };
         np.context = p.context_uri;
         np.position_ms = position;
+        np.position_at_ms = proto::now_ms();
         np.playing = playing;
         np.next = next;
+        (np.shuffle, np.repeat) = (shuffle, repeat);
         self.state.send_if_modified(|s| {
             let np = NowPlaying { volume: s.volume, ..np };
             let changed = *s != np;
@@ -551,6 +559,7 @@ fn apply(np: &mut NowPlaying, s: &Value) -> bool {
         next.context = str("context").unwrap_or_default();
         next.duration_ms = num("duration_ms").unwrap_or(0.0) as u32;
         next.position_ms = num("position_ms").unwrap_or(0.0) as u32;
+        next.position_at_ms = proto::now_ms();
         next.playing = s.get("playing").and_then(Value::as_bool).unwrap_or(false);
     }
     if let Some(v) = num("volume") {

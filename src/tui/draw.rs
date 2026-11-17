@@ -555,7 +555,7 @@ fn draw_bar(f: &mut Frame, app: &mut App, area: Rect) {
         ("⏮", Style::new().fg(TEXT), Cmd::Prev),
         (if np.playing { "⏸" } else { "▶" }, Style::new().fg(Color::Black).bg(TEXT).bold(), Cmd::PlayPause),
         ("⏭", Style::new().fg(TEXT), Cmd::Next),
-        ("↻", active(app.repeat), Cmd::Repeat(!app.repeat)),
+        (if app.repeat == crate::proto::Repeat::Track { "↻¹" } else { "↻" }, active(app.repeat != crate::proto::Repeat::Off), Cmd::Repeat(app.repeat.cycle())),
     ];
     let total = buttons.len() as u16 * 5 - 2;
     let mut x = center.x + center.width.saturating_sub(total) / 2;

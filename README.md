@@ -38,7 +38,26 @@ the same tab). Then:
 
 ```sh
 hum          # open the TUI (starts the daemon if needed)
+hum start    # start the daemon in the background (exits after 10 min idle with nothing playing)
 hum kill     # stop the daemon
+```
+
+Remote control from scripts or key bindings (starts the daemon if needed, except `get`):
+
+```sh
+hum play URI|LINK                   # track/album/playlist/artist; open.spotify.com links work too
+hum next | prev
+hum queue URI|LINK
+hum toggle play|shuffle|repeat|like
+hum set play|shuffle|like on|off
+hum set repeat off|on|track         # on = repeat the context
+hum set volume 40                   # percent; +5 / -5 relative
+hum set position 90                 # seconds; +10 / -10 relative
+hum get play|shuffle|repeat|like|volume|position|queue|status [--json] [-f]
+                                    # -f/--follow: a new line on every change; fails when no daemon runs
+hum devices                         # Connect devices, `*` = active
+hum transfer NAME|ID
+hum completions zsh|bash|fish|...   # shell completion script
 ```
 
 ## Keys

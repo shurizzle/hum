@@ -23,7 +23,8 @@ Do not finish a task with docs out of date.
 ## Layout
 
 ```
-src/main.rs        entry: `hum`, `hum kill`, `hum daemon`
+src/main.rs        entry and clap parsing: `hum`, `hum kill`, `hum daemon`, remote subcommands
+src/cli.rs         remote-control subcommands (play, toggle, set, get, devices, ...)
 src/proto.rs       IPC types and framing
 src/daemon.rs      librespot session (tokens), socket server, command dispatch, log forwarding
 src/player.rs      supervised ECS player child, Web API calls for its device

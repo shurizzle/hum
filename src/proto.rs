@@ -21,7 +21,7 @@ pub enum Cmd {
     Seek(u32),
     Volume(u16),
     Shuffle(bool),
-    Repeat(bool),
+    Repeat(Repeat),
     /// Add a track or episode to the queue; activates hum (paused) if no device is active.
     Queue(String),
     /// Track metadata for the queue panel; answered with `Msg::Tracks`.
@@ -56,6 +56,26 @@ pub struct LyricsLine {
     pub words: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Repeat {
+    #[default]
+    Off,
+    Context,
+    Track,
+}
+
+impl Repeat {
+    /// Next state of the repeat button, like the official clients: off, context, track.
+    pub fn cycle(self) -> Self {
+        match self {
+            Repeat::Off => Repeat::Context,
+            Repeat::Context => Repeat::Track,
+            Repeat::Track => Repeat::Off,
+        }
+    }
+}
+
 /// A Spotify Connect device of the account.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Device {
@@ -77,8 +97,16 @@ pub struct NowPlaying {
     pub context: String,
     pub duration_ms: u32,
     pub position_ms: u32,
+    /// Unix time (ms) `position_ms` was measured at, to extrapolate it while `playing`.
+    #[serde(default)]
+    pub position_at_ms: u64,
     pub playing: bool,
     pub volume: u16,
+    /// Shuffle and repeat (context or track) of the active device, from the Connect cluster.
+    #[serde(default)]
+    pub shuffle: bool,
+    #[serde(default)]
+    pub repeat: Repeat,
     /// Upcoming track uris from the account's Connect cluster (restored or mirrored playback);
     /// the Web API queue is empty while no device is active.
     #[serde(default)]
@@ -107,7 +135,14 @@ pub enum Msg {
     Library,
     /// This playlist's tracks changed (`spotify:playlist:<id>`), here or on another device.
     Playlist(String),
+    /// Failure of the command this connection sent last.
     Error(String),
+    /// A daemon/player/librespot warning or error, pushed to every client; not a command failure.
+    Log(String),
+}
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
 
 pub type Conn = Framed<UnixStream, LengthDelimitedCodec>;

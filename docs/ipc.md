@@ -14,7 +14,7 @@ Defined in `src/proto.rs`.
 | `PlayPause`, `Next`, `Prev` | Player (SDK) controls |
 | `Seek(ms)` | Player seek |
 | `Volume(u16)` | 0..=65535 |
-| `Shuffle(bool)`, `Repeat(bool)` | Web API, `Repeat(true)` = repeat context |
+| `Shuffle(bool)`, `Repeat(Repeat)` | Web API; `Repeat` is `"off"`, `"context"` or `"track"` |
 | `Queue(uri)` | `POST /me/player/queue` on the active device; with none active, first transfers playback to hum paused (`Player::activate`), retrying while the transfer registers |
 | `Unqueue { uri, nth }` | Remove the `nth` (0-based) occurrence of `uri` in `NowPlaying.next` via a Connect `set_queue` command |
 | `MoveQueue { uri, nth, down }` | Swap that track with the next/previous shown one via `set_queue`; each slot keeps its provider (queue/context) |
@@ -25,7 +25,11 @@ Defined in `src/proto.rs`.
 | `Token` | Reply with `Msg::Tokens` |
 | `Shutdown` | Stop the daemon |
 
-Only `Token` gets a direct reply. Failures of any command come back as `Msg::Error`.
+Commands whose row says "Reply" get a direct reply. Failures of any command come back as `Msg::Error`.
+
+Commands on a connection are handled in order, and the daemon closes it on EOF. One-shot clients
+(`src/cli.rs`) rely on this: send a `Cmd`, shut down the write half, read until EOF; an
+`Msg::Error` in between is that command's failure.
 
 ## Daemon → client: `Msg`
 
@@ -39,11 +43,14 @@ Only `Token` gets a direct reply. Failures of any command come back as `Msg::Err
 | `Tokens { access_token, client_token, web_token }` | Reply to `Cmd::Token`. `access_token`/`client_token`: librespot session (pathfinder). `web_token`: hum developer app (Web API). |
 | `Library` | Your Library or liked songs changed (any device); clients reload the library and the hearts on screen |
 | `Playlist(uri)` | That playlist's contents changed (any device); clients reload it if open |
-| `Error(String)` | Command failure, or a daemon/librespot warning or error |
+| `Error(String)` | Failure of the command this connection sent |
+| `Log(String)` | A daemon/player/librespot warning or error, pushed to every client (TUI status bar) |
 
 `NowPlaying`: `uri`, `name`, `artists`, `album`, `cover` (url, ~300 px), `context` (playlist/
 album/artist uri the track plays from, empty for loose tracks), `duration_ms`,
-`position_ms` (at the time of the event; clients extrapolate while `playing`), `playing`, `volume`,
+`position_ms` (at the time of the event; clients extrapolate while `playing`), `position_at_ms`
+(unix ms when `position_ms` was measured), `playing`, `volume`,
+`shuffle`, `repeat` (`Repeat`; both from the Connect cluster of the active device),
 `next` (upcoming track uris from the Connect cluster, max 100, kept current for every device;
 the TUI's queue panel shows them).
 

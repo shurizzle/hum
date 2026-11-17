@@ -86,7 +86,7 @@ get their title and cover from the first response (`Api::open` returns the root 
 | `n` / `b` | Next / previous |
 | `H` / `L`, `Shift+←/→` | Seek ∓10 s |
 | `+` / `-` | Volume |
-| `s` / `r` | Shuffle / repeat |
+| `s` / `r` | Shuffle / repeat; repeat cycles off, context, track (`↻¹`). Toggled locally, then follow `NowPlaying.shuffle`/`repeat` when another client or device changes them |
 | `a` | Add the selected track/episode to the queue (`Cmd::Queue`; works with no active device) |
 | `f` | Like/unlike the selected track, album, artist, playlist (`Api::set_saved`) |
 | `F` | Like/unlike the playing track |

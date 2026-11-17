@@ -22,7 +22,7 @@ use crate::{
 
 const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
 
-/// Pushed to every client: warnings and errors (daemon, player, librespot) as `Msg::Error` for the
+/// Pushed to every client: warnings and errors (daemon, player, librespot) as `Msg::Log` for the
 /// status bar, and `Msg::Library`.
 static EVENTS: std::sync::OnceLock<broadcast::Sender<Msg>> = std::sync::OnceLock::new();
 
@@ -55,7 +55,7 @@ impl log::Log for Logger {
             // Every like also sends a `…/json` collection push that librespot cannot parse (JSON,
             // base64 expected); the plain one next to it reaches `Player::follow`. Noise, not an error.
             if !(r.target() == "librespot_core::dealer" && msg.contains("hm://collection/")) {
-                let _ = events().send(Msg::Error(format!("{}: {msg}", r.target().rsplit("::").next().unwrap_or(""))));
+                let _ = events().send(Msg::Log(format!("{}: {msg}", r.target().rsplit("::").next().unwrap_or(""))));
             }
         }
         self.0.log(r);
@@ -228,7 +228,14 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
         Cmd::Seek(ms) => player.command("seek", json!(ms)),
         Cmd::Volume(v) => player.command("volume", json!(v as f64 / u16::MAX as f64)),
         Cmd::Shuffle(on) => player.web(&format!("/me/player/shuffle?state={on}"), None).await?,
-        Cmd::Repeat(on) => player.web(&format!("/me/player/repeat?state={}", if on { "context" } else { "off" }), None).await?,
+        Cmd::Repeat(r) => {
+            let state = match r {
+                proto::Repeat::Off => "off",
+                proto::Repeat::Context => "context",
+                proto::Repeat::Track => "track",
+            };
+            player.web(&format!("/me/player/repeat?state={state}"), None).await?
+        }
         Cmd::Queue(uri) => {
             // The Web API queues only on an active device ("NO_ACTIVE_DEVICE" otherwise).
             let path = format!("/me/player/queue?uri={uri}");

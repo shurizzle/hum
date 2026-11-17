@@ -42,7 +42,7 @@ both see the same now-playing state.
 - Logs the account type (`type`, `catalogue`, country) 3 s after login, for diagnosing playback
   refusals.
 - Forwards `warn`/`error` log records (daemon, player, librespot) to all clients as
-  `Msg::Error`, shown in the TUI status bar.
+  `Msg::Log`, shown in the TUI status bar.
 - Exits after 10 minutes with no clients and nothing playing, on `Cmd::Shutdown` or on Ctrl-C.
   Removes socket and pid file on exit; the player child dies with it.
 
@@ -54,7 +54,23 @@ both see the same now-playing state.
 - First message on every connection is `Msg::Hello { version, protocol }` (`CARGO_PKG_VERSION`,
   `proto::PROTOCOL`). A daemon with another protocol (or one that does not send `Hello`) is
   stopped and replaced; app versions alone never restart it.
+- `hum start` only connects (spawning the daemon if needed) and exits.
 - `hum kill` sends `Cmd::Shutdown`, waits 5 s, then `kill -9` using `hum.pid`.
+
+## Remote-control subcommands
+
+- `src/cli.rs` (`hum play`, `toggle`, `set`, `get`, `devices`, `transfer`, ...; parsed with
+  clap in `src/main.rs`). Each is a short-lived IPC client: connect (spawning the daemon, after
+  `auth::ensure_login`), read the initial `State`, send one `Cmd`, half-close the socket and read
+  until the daemon closes. Commands with a reply (`Devices`, `Token`, `Tracks`) read until it.
+  `Msg::Error` makes the command fail; `Msg::Log` is ignored.
+- Likes (`toggle|set|get like`) take tokens from the daemon (`Cmd::Token`) and call
+  `api::Api::saved`/`set_saved` from the CLI, like the TUI.
+- `hum get --follow` keeps the connection and prints a line whenever the value changes
+  (position: every second while playing; like: on track change or `Msg::Library`; queue: on
+  `NowPlaying.next` change, titles via `Cmd::Tracks`).
+- `hum get` only connects to a running daemon (`spawn::try_connect`) so polling it from a
+  status bar does not keep an idle daemon alive; without one it fails with "daemon not running".
 
 ## Client
 
