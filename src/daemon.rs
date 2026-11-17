@@ -22,8 +22,22 @@ use crate::{
 
 const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
 
-/// Warnings and errors (daemon, player, librespot), forwarded to every client's status bar.
-static ERRORS: std::sync::OnceLock<broadcast::Sender<String>> = std::sync::OnceLock::new();
+/// Pushed to every client: warnings and errors (daemon, player, librespot) as `Msg::Error` for the
+/// status bar, and `Msg::Library`.
+static EVENTS: std::sync::OnceLock<broadcast::Sender<Msg>> = std::sync::OnceLock::new();
+
+fn events() -> &'static broadcast::Sender<Msg> {
+    EVENTS.get_or_init(|| broadcast::channel(64).0)
+}
+
+pub fn playlist_changed(uri: String) {
+    let _ = events().send(Msg::Playlist(uri));
+}
+
+/// Tells every client that Your Library changed.
+pub fn library_changed() {
+    let _ = events().send(Msg::Library);
+}
 
 struct Logger(env_logger::Logger);
 
@@ -36,10 +50,13 @@ impl log::Log for Logger {
         if !self.0.matches(r) {
             return;
         }
-        if r.level() <= log::Level::Warn
-            && let Some(tx) = ERRORS.get()
-        {
-            let _ = tx.send(format!("{}: {}", r.target().rsplit("::").next().unwrap_or(""), r.args()));
+        if r.level() <= log::Level::Warn {
+            let msg = r.args().to_string();
+            // Every like also sends a `…/json` collection push that librespot cannot parse (JSON,
+            // base64 expected); the plain one next to it reaches `Player::follow`. Noise, not an error.
+            if !(r.target() == "librespot_core::dealer" && msg.contains("hm://collection/")) {
+                let _ = events().send(Msg::Error(format!("{}: {msg}", r.target().rsplit("::").next().unwrap_or(""))));
+            }
         }
         self.0.log(r);
     }
@@ -52,7 +69,7 @@ impl log::Log for Logger {
 pub fn init_logger() {
     let inner = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
     log::set_max_level(inner.filter());
-    ERRORS.get_or_init(|| broadcast::channel(64).0);
+    events();
     let _ = log::set_boxed_logger(Box::new(Logger(inner)));
 }
 
@@ -138,14 +155,14 @@ pub async fn run() -> Result<()> {
 
 async fn client(stream: UnixStream, shared: &Shared) -> Result<()> {
     let mut conn = proto::frame(stream);
-    proto::send(&mut conn, &Msg::Hello { version: proto::VERSION.into() }).await?;
+    proto::send(&mut conn, &Msg::Hello { version: proto::VERSION.into(), protocol: proto::PROTOCOL }).await?;
     let mut state = shared.state.clone();
-    let mut errors = ERRORS.get_or_init(|| broadcast::channel(64).0).subscribe();
+    let mut events = events().subscribe();
     let snapshot = state.borrow_and_update().clone();
     proto::send(&mut conn, &Msg::State(snapshot)).await?;
     loop {
         tokio::select! {
-            Ok(e) = errors.recv() => proto::send(&mut conn, &Msg::Error(e)).await?,
+            Ok(msg) = events.recv() => proto::send(&mut conn, &msg).await?,
             changed = state.changed() => {
                 changed?;
                 let snapshot = state.borrow_and_update().clone();

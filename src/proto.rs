@@ -86,12 +86,15 @@ pub struct NowPlaying {
 }
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// IPC protocol version, independent of the app version: bump it on any change to `Cmd`, `Msg` or
+/// the types they carry. A daemon speaking another one is replaced.
+pub const PROTOCOL: u32 = 0;
 
 /// Daemon -> client. Replies carry no id: a client sends one command at a time per reply it awaits.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Msg {
     /// First message on every connection.
-    Hello { version: String },
+    Hello { version: String, protocol: u32 },
     State(NowPlaying),
     Tokens(Tokens),
     /// Answer to `Cmd::Tracks`, in request order, unknown tracks skipped.
@@ -100,6 +103,10 @@ pub enum Msg {
     Lyrics { uri: String, lines: Vec<LyricsLine> },
     /// Answer to `Cmd::Devices`.
     Devices(Vec<Device>),
+    /// Your Library or liked songs changed, here or on another device.
+    Library,
+    /// This playlist's tracks changed (`spotify:playlist:<id>`), here or on another device.
+    Playlist(String),
     Error(String),
 }
 
@@ -112,12 +119,6 @@ pub fn socket_path() -> PathBuf {
 /// `name` in `$XDG_RUNTIME_DIR`, else `$TMPDIR`: socket, pid file, spawn lock.
 pub fn runtime_path(name: &str) -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join(name)
-}
-
-/// Whether dotted version `a` is lower than `b`.
-pub fn older(a: &str, b: &str) -> bool {
-    let parse = |v: &str| v.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
-    parse(a) < parse(b)
 }
 
 pub fn frame(stream: UnixStream) -> Conn {
@@ -152,10 +153,8 @@ mod tests {
     }
 
     #[test]
-    fn versions() {
-        assert!(older("0.1.0", "0.2.0"));
-        assert!(older("0.9.0", "0.10.0"));
-        assert!(!older("0.2.0", "0.2.0"));
-        assert!(!older("1.0.0", "0.9.9"));
+    fn hello_without_protocol() {
+        // Daemons predating `protocol` do not parse, so `spawn::try_connect` replaces them.
+        assert!(serde_json::from_str::<Msg>(r#"{"Hello":{"version":"0.1.0"}}"#).is_err());
     }
 }

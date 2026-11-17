@@ -57,7 +57,7 @@ Rust toolchain comes from Homebrew `rustup`; `cargo` lives in `/opt/homebrew/opt
 
 - UI responsiveness first: never block the `tokio::select!` loop; network and image work goes to
   tasks reporting over channels; fetches tied to navigation must be abortable.
-- Bump `version` in `Cargo.toml` on any IPC change so stale daemons are replaced.
+- Bump `proto::PROTOCOL` (not the app version) on any IPC change so stale daemons are replaced.
 - Disk cache (`src/cache.rs`) is best effort and never used from the render path or the
   `select!` loop, only from tasks. Playlists, home, library and search are never cached.
 - Parse Spotify responses schema-agnostically (`api::items`), not with rigid structs.

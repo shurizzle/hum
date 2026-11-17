@@ -176,6 +176,8 @@ pub enum Hit {
     Home,
     Back,
     ToggleQueue,
+    /// A heart: like/unlike this uri.
+    Like(String),
 }
 
 enum Loaded {
@@ -183,6 +185,8 @@ enum Loaded {
     /// Next chunk of the page opened at `generation`.
     Fill { generation: u64, items: Vec<Item>, more: bool, root: Option<Item> },
     Library(Vec<Item>),
+    /// Liked state of tracks, albums, artists; also restores it when a like fails.
+    Saved(Vec<(String, bool)>),
     Status(String),
 }
 
@@ -195,6 +199,8 @@ pub struct App {
     /// Fetch for the current page; aborted when the user navigates away.
     page_task: Option<AbortHandle>,
     pub library: Vec<Item>,
+    /// Liked (saved) state by uri, for what `api.saved` supports; playlists use `library`.
+    saved: std::collections::HashMap<String, bool>,
     pub lib_sel: usize,
     pub lib_top: usize,
     pub lib_area: Rect,
@@ -245,7 +251,7 @@ pub async fn run(mut conn: Conn) -> Result<()> {
         match proto::recv::<Msg>(&mut conn).await? {
             Some(Msg::Tokens(t)) => break t,
             Some(Msg::State(s)) => np = s,
-            Some(Msg::Hello { .. } | Msg::Tracks(_) | Msg::Devices(_) | Msg::Lyrics { .. }) => {}
+            Some(Msg::Hello { .. } | Msg::Tracks(_) | Msg::Devices(_) | Msg::Lyrics { .. } | Msg::Library | Msg::Playlist(_)) => {}
             // Usually the network (tokens need Spotify); the daemon keeps running, so ask again.
             Some(Msg::Error(e)) => {
                 eprintln!("daemon: {e}; retrying in 3 s (Ctrl-C to quit)");
@@ -265,6 +271,7 @@ pub async fn run(mut conn: Conn) -> Result<()> {
         generation: 0,
         page_task: None,
         library: vec![],
+        saved: Default::default(),
         lib_sel: 0,
         lib_top: 0,
         lib_area: Rect::default(),
@@ -360,6 +367,7 @@ async fn event_loop(
                             app.open_at(item, Some(s.uri.clone()));
                         }
                         (app.np, app.np_at) = (s, Instant::now());
+                        app.check_saved(vec![app.np.uri.clone()]);
                         app.request_lyrics();
                         // After the assignment: the fallback reads `np.next`.
                         if queue_changed {
@@ -380,6 +388,8 @@ async fn event_loop(
                         app.queue_cache.extend(items.into_iter().map(|i| (i.uri.clone(), i)));
                         app.show_queue_window();
                     }
+                    Some(Msg::Library) => app.library_changed(),
+                    Some(Msg::Playlist(uri)) => app.playlist_changed(&uri),
                     Some(Msg::Hello { .. }) => {}
                     Some(Msg::Error(e)) => {
                         app.status = e;
@@ -396,11 +406,15 @@ async fn event_loop(
                         if !push {
                             app.stack.clear();
                         }
+                        let uris = page.secs.iter().flat_map(|s| &s.items).map(|i| i.uri.clone()).collect();
                         app.stack.push(page);
                         app.focus = Focus::Main;
                         app.status.clear();
+                        app.check_saved(uris);
                     }
                     Loaded::Fill { generation, items, more, root } if generation == app.generation => {
+                        let header = app.page().and_then(|p| p.header.as_ref()).map(|h| h.uri.clone());
+                        app.check_saved(items.iter().map(|i| i.uri.clone()).chain(header).collect());
                         if let Some(page) = app.stack.last_mut() {
                             let songs = if page.context.as_deref().is_some_and(|c| c.starts_with("spotify:artist:")) { "Popular" } else { "Songs" };
                             add(&mut page.secs, items, songs);
@@ -422,6 +436,7 @@ async fn event_loop(
                     }
                     Loaded::Page { .. } | Loaded::Fill { .. } => {}
                     Loaded::Library(items) => app.library = items,
+                    Loaded::Saved(saved) => app.saved.extend(saved),
                     Loaded::Status(s) => app.status = s,
                 }
                 vec![]
@@ -490,6 +505,83 @@ impl App {
                 })
                 .collect();
             Ok(Page::new("Home", None, secs))
+        });
+    }
+
+    /// Fetches the liked state of the `uris` not known yet.
+    fn check_saved(&mut self, mut uris: Vec<String>) {
+        uris.retain(|u| saveable(u) && !u.starts_with("spotify:playlist:") && !self.saved.contains_key(u));
+        uris.dedup();
+        if uris.is_empty() {
+            return;
+        }
+        // Shown as not liked until the answer arrives; also keeps the uris from being asked again.
+        self.saved.extend(uris.iter().map(|u| (u.clone(), false)));
+        self.fetch_saved(uris);
+    }
+
+    fn fetch_saved(&self, uris: Vec<String>) {
+        let api = self.api.clone();
+        for chunk in uris.chunks(50).map(<[String]>::to_vec) {
+            let api = api.clone();
+            self.spawn(async move { Ok(Loaded::Saved(chunk.iter().cloned().zip(api.saved(&chunk).await?).collect())) });
+        }
+    }
+
+    pub fn liked(&self, uri: &str) -> Option<bool> {
+        liked(&self.saved, &self.library, uri)
+    }
+
+    /// Your Library changed (`Msg::Library`), maybe on another device: reload it and the hearts on
+    /// screen. Other known hearts are forgotten and asked again when shown.
+    fn library_changed(&mut self) {
+        self.load_library();
+        let page = self.page().into_iter().flat_map(|p| p.header.iter().chain(p.secs.iter().flat_map(|s| &s.items)));
+        let shown: std::collections::HashSet<String> = page.map(|i| i.uri.clone()).chain([self.np.uri.clone()]).filter(|u| self.saved.contains_key(u)).collect();
+        self.saved.retain(|u, _| shown.contains(u));
+        self.fetch_saved(shown.into_iter().collect());
+    }
+
+    /// The open playlist changed (`Msg::Playlist`): reload it in place, keeping the selection.
+    fn playlist_changed(&mut self, uri: &str) {
+        let Some(page) = self.page().filter(|p| p.header.as_ref().is_some_and(|h| h.uri == uri)) else { return };
+        let (header, focus) = (page.header.clone().unwrap(), page.selected().map(|i| i.uri.clone()));
+        let panel = self.focus;
+        self.stack.pop();
+        self.open_at(header, focus);
+        self.focus = panel;
+    }
+
+    /// The heart: likes or unlikes at once, restoring the shown state if Spotify refuses.
+    fn toggle_like(&mut self, uri: String) {
+        let Some(was) = self.liked(&uri) else { return };
+        let playlist = uri.starts_with("spotify:playlist:");
+        if playlist {
+            if was {
+                self.library.retain(|i| i.uri != uri);
+            } else {
+                // Shown until the library reload brings the real entry.
+                self.library.insert(0, Item::from_uri(&uri));
+            }
+        } else {
+            self.saved.insert(uri.clone(), !was);
+        }
+        let place = if uri.starts_with("spotify:track:") { "Liked Songs" } else { "Your Library" };
+        self.status = if was { format!("Removed from {place}") } else { format!("Added to {place}") };
+        let (api, tx) = (self.api.clone(), self.tx.clone());
+        tokio::spawn(async move {
+            let res = api.set_saved(&uri, !was).await;
+            if let Err(e) = &res {
+                let _ = tx.send(Loaded::Status(format!("{e:#}")));
+                if !playlist {
+                    let _ = tx.send(Loaded::Saved(vec![(uri, was)]));
+                }
+            }
+            // Albums, artists, shows and playlists live in Your Library; a failed playlist change
+            // also needs it to drop the shown placeholder.
+            if (res.is_ok() || playlist) && let Ok(items) = api.library().await {
+                let _ = tx.send(Loaded::Library(items));
+            }
         });
     }
 
@@ -810,6 +902,12 @@ impl App {
                     return vec![Cmd::Queue(item.uri)];
                 }
             }
+            KeyCode::Char('f') => {
+                if let Some(item) = self.selected() {
+                    self.toggle_like(item.uri);
+                }
+            }
+            KeyCode::Char('F') if !self.np.uri.is_empty() => self.toggle_like(self.np.uri.clone()),
             KeyCode::Char(' ') => return vec![Cmd::PlayPause],
             KeyCode::Char('n') => return vec![Cmd::Next],
             KeyCode::Char('b') => return vec![Cmd::Prev],
@@ -908,6 +1006,7 @@ impl App {
                     Hit::Home => self.home(),
                     Hit::Back => self.back(),
                     Hit::ToggleQueue => self.toggle_queue(),
+                    Hit::Like(uri) => self.toggle_like(uri),
                 }
                 vec![]
             }
@@ -930,6 +1029,24 @@ fn save_last_page(item: Option<&Item>) {
         Some(item) => serde_json::to_vec(item).map_err(std::io::Error::other).and_then(|b| std::fs::write(last_page_path(), b)),
         None => std::fs::remove_file(last_page_path()),
     };
+}
+
+/// Liked state shown for `uri`; `None` for what cannot be liked. A free function so the renderer
+/// can call it while a page is borrowed.
+fn liked(saved: &std::collections::HashMap<String, bool>, library: &[Item], uri: &str) -> Option<bool> {
+    if !saveable(uri) {
+        return None;
+    }
+    if uri.starts_with("spotify:playlist:") {
+        return Some(library.iter().any(|i| i.uri == uri));
+    }
+    saved.get(uri).copied()
+}
+
+/// What the web player's heart works on.
+fn saveable(uri: &str) -> bool {
+    let mut parts = uri.split(':');
+    parts.next() == Some("spotify") && matches!(parts.next(), Some("track" | "album" | "artist" | "playlist" | "show" | "episode"))
 }
 
 fn play_context(uri: String) -> Cmd {

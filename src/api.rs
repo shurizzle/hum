@@ -18,7 +18,19 @@ const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/53
 /// Disk cache lifetimes; playlists, home, library and search are never cached.
 const ALBUM_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 const ARTIST_TTL: Duration = Duration::from_secs(24 * 3600);
-const OPS: &[&str] = &["home", "searchDesktop", "fetchPlaylist", "getAlbum", "queryArtistOverview", "libraryV3", "fetchLibraryTracks"];
+const OPS: &[&str] = &[
+    "home",
+    "searchDesktop",
+    "fetchPlaylist",
+    "getAlbum",
+    "queryArtistOverview",
+    "libraryV3",
+    "fetchLibraryTracks",
+    "areEntitiesInLibrary",
+    "addToLibrary",
+    "removeFromLibrary",
+];
+const WEB_API: &str = "https://api.spotify.com/v1";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Item {
@@ -135,6 +147,32 @@ impl Api {
         })
         .filter(|(_, found)| !found.is_empty())
         .collect())
+    }
+
+    /// Whether each uri is in Your Library (Liked Songs for tracks). Playlists are not supported
+    /// by this operation: they are saved when they show up in `library`.
+    pub async fn saved(&self, uris: &[String]) -> Result<Vec<bool>> {
+        let v = errors(self.query("areEntitiesInLibrary", json!({"uris": uris})).await?)?;
+        let lookup = v.pointer("/data/lookup").and_then(Value::as_array).cloned().unwrap_or_default();
+        Ok((0..uris.len()).map(|i| lookup.get(i).and_then(|l| l.pointer("/data/saved")?.as_bool()).unwrap_or(false)).collect())
+    }
+
+    /// Like/unlike, like the heart of the web player: tracks, albums, artists, shows, episodes go
+    /// through pathfinder, playlists through the Web API (the web player uses its rootlist there).
+    pub async fn set_saved(&self, uri: &str, on: bool) -> Result<()> {
+        if let Some(id) = uri.strip_prefix("spotify:playlist:") {
+            let token = self.tokens.read().unwrap().web_token.clone();
+            let url = format!("{WEB_API}/playlists/{id}/followers");
+            let req = if on { self.http.put(url).json(&json!({"public": false})) } else { self.http.delete(url) };
+            let res = req.bearer_auth(token).send().await?;
+            if !res.status().is_success() {
+                bail!("{uri}: {} {}", res.status(), res.text().await.unwrap_or_default());
+            }
+            return Ok(());
+        }
+        let op = if on { "addToLibrary" } else { "removeFromLibrary" };
+        errors(self.query(op, json!({"libraryItemUris": [uri], "interactionId": null})).await?)?;
+        Ok(())
     }
 
     pub async fn library(&self) -> Result<Vec<Item>> {
@@ -261,6 +299,14 @@ impl Api {
             }
         }
         Ok(out)
+    }
+}
+
+/// GraphQL errors come back with status 200.
+fn errors(v: Value) -> Result<Value> {
+    match v.pointer("/errors/0/message").and_then(Value::as_str) {
+        Some(e) => bail!("{e}"),
+        None => Ok(v),
     }
 }
 

@@ -32,6 +32,8 @@ the official app. All of this is undocumented and can break without notice.
 | `libraryV3` | Your Library | |
 | `fetchPlaylist`, `getAlbum`, `fetchLibraryTracks` | Pages, paged by `offset`/`limit` | |
 | `queryArtistOverview` | Artist page | Not paged |
+| `areEntitiesInLibrary` | Liked state (`Api::saved`) | `{uris}` → `data.lookup[i].data.saved`, same order. Not for playlists |
+| `addToLibrary`, `removeFromLibrary` | Heart (`Api::set_saved`) | `{libraryItemUris: [uri], interactionId: null}`; tracks, albums, artists, shows, episodes (the web player's `pa` check). Mutations, hash in the main bundle. GraphQL errors arrive with status 200 (`api::errors`) |
 
 When a variable is missing the API answers 400 with the variable name; copy the variables from the
 web player bundle (search for the operation's variables object in the JS).
@@ -80,7 +82,11 @@ else is ignored.
 
 `https://api.spotify.com/v1` with the web token:
 
-Daemon only (the client no longer calls it):
+Client: `PUT|DELETE /playlists/{id}/followers` (`Api::set_saved`): saving playlists, which
+`addToLibrary` refuses (the web player edits its rootlist instead). Needs `playlist-modify-public`
+and `playlist-modify-private`.
+
+Daemon:
 
 - `PUT /me/player/play|shuffle|repeat?device_id=<hum device>`, `PUT /me/player` (transfer),
   `POST /me/player/queue?uri=` (empty body: Spotify answers 411 to bodiless POSTs without a content

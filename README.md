@@ -45,7 +45,7 @@ hum kill     # stop the daemon
 
 `hjkl`/arrows move · `Enter` open/play · `Esc` back · `/` search · `g` home · `Space` play/pause ·
 `n`/`b` next/previous · `Shift+←/→` seek · `+`/`-` volume · `s` shuffle · `r` repeat ·
-`a` add to queue · `[` / `]` library / now-playing panel · `c` pick device · `y` lyrics · `?` all keys · `q` quit · `Q` quit and stop the daemon.
+`a` add to queue · `f`/`F` like selected/playing · `[` / `]` library / now-playing panel · `c` pick device · `y` lyrics · `?` all keys · `q` quit · `Q` quit and stop the daemon.
 
 Full reference: [docs/tui.md](docs/tui.md).
 

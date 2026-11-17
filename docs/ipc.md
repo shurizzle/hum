@@ -31,12 +31,14 @@ Only `Token` gets a direct reply. Failures of any command come back as `Msg::Err
 
 | Variant | When |
 |---|---|
-| `Hello { version }` | First message on every connection |
+| `Hello { version, protocol }` | First message on every connection: app version (informative) and `proto::PROTOCOL` |
 | `State(NowPlaying)` | Right after `Hello`, then on every change |
 | `Tracks(Vec<Item>)` | Reply to `Cmd::Tracks` |
 | `Lyrics { uri, lines }` | Reply to `Cmd::Lyrics` |
 | `Devices(Vec<Device>)` | Reply to `Cmd::Devices`; `Device { id, name, kind, active }` |
 | `Tokens { access_token, client_token, web_token }` | Reply to `Cmd::Token`. `access_token`/`client_token`: librespot session (pathfinder). `web_token`: hum developer app (Web API). |
+| `Library` | Your Library or liked songs changed (any device); clients reload the library and the hearts on screen |
+| `Playlist(uri)` | That playlist's contents changed (any device); clients reload it if open |
 | `Error(String)` | Command failure, or a daemon/librespot warning or error |
 
 `NowPlaying`: `uri`, `name`, `artists`, `album`, `cover` (url, ~300 px), `context` (playlist/
@@ -47,8 +49,12 @@ the TUI's queue panel shows them).
 
 ## Compatibility
 
-Any change to `Cmd`, `Msg` or `NowPlaying` is a protocol change: bump the version in `Cargo.toml`
-so old daemons get replaced (see `spawn::try_connect`). During development the version does not
-change, so run `hum kill` after rebuilding.
+The protocol has its own version, `proto::PROTOCOL` (u32), independent of the app version in
+`Cargo.toml`. Any change to `Cmd`, `Msg` or the types they carry (`NowPlaying`, `Tokens`, `Item`,
+...) bumps it; a client finding a daemon with another protocol stops and replaces it (see
+`spawn::try_connect`). Daemons predating the field send a `Hello` that does not parse and are
+replaced too. A new app version with the same
+protocol keeps the running daemon, so a TUI-only update does not restart playback; daemon-side
+changes then need `hum kill`. During development, run `hum kill` after rebuilding.
 
 Manual testing from Python: connect to the socket, read/write `struct.pack('>I', len) + json`.

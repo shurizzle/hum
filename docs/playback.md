@@ -31,7 +31,19 @@ JSON lines. Daemon → player on stdin, player → daemon on stdout prefixed wit
 `player::Mirror` follows the account's connect-state cluster for the life of the daemon, on its own
 librespot session: the dealer starts once per session, so any failure (network down at startup,
 dealer gone) logs a warning and retries after 5 s with a fresh session. Start the librespot dealer, `PUT /connect-state/v1/devices/<id>` as a hidden observer device on every new
-connection id (first connect, dealer reconnects), then read `hm://connect-state/v1/cluster` pushes.
+connection id (first connect, dealer reconnects), then read `hm://connect-state/v1/cluster` pushes. The same dealer turns library pushes, from any
+device, into client messages:
+
+| Push | When | Message |
+|---|---|---|
+| `hm://collection/{collection,artist,show}/<user>` | like/unlike of tracks and albums, artists, shows | `Msg::Library` |
+| `hm://playlist/v2/user/<user>/rootlist` | playlist saved/removed | `Msg::Library` |
+| `hm://playlist/v2/playlist/<id>` | playlist contents changed (also Spotify mixes after a like) | `Msg::Playlist(uri)` |
+
+Ignored: `hm://playlist/v2/list/liked-songs-artist/<artist>` and the legacy
+`hm://playlist/user/<user>/rootlist` (duplicates of the above). Each collection push also comes as
+`…/json`, which librespot 0.8 cannot parse (JSON, base64 expected) and logs as a warning; the
+daemon keeps that warning out of the status bar.
 From each cluster's `player_state` (track, context, `next_tracks`, `position_as_of_timestamp`,
 extrapolated while playing):
 

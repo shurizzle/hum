@@ -51,8 +51,9 @@ both see the same now-playing state.
 - `src/spawn.rs`. The client connects to the socket. On failure it takes an exclusive `flock` on
   `hum.lock` (so concurrent clients spawn only one daemon), retries, then spawns and polls for up
   to 10 s.
-- First message on every connection is `Msg::Hello { version }` (`CARGO_PKG_VERSION`). A daemon
-  older than the client (or one that does not send `Hello`) is stopped and replaced.
+- First message on every connection is `Msg::Hello { version, protocol }` (`CARGO_PKG_VERSION`,
+  `proto::PROTOCOL`). A daemon with another protocol (or one that does not send `Hello`) is
+  stopped and replaced; app versions alone never restart it.
 - `hum kill` sends `Cmd::Shutdown`, waits 5 s, then `kill -9` using `hum.pid`.
 
 ## Client

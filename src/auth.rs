@@ -30,6 +30,9 @@ const WEB_SCOPES: &[&str] = &[
     "user-read-private",
     "user-read-playback-state",
     "user-modify-playback-state",
+    // Saving playlists to Your Library (`Api::set_saved`).
+    "playlist-modify-public",
+    "playlist-modify-private",
 ];
 
 pub fn config_dir() -> PathBuf {

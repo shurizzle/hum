@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// Connects to the daemon, spawning it detached if it is not running.
-/// A daemon older than this client is stopped and replaced.
+/// A daemon speaking another IPC protocol is stopped and replaced.
 pub async fn connect() -> Result<proto::Conn> {
     if let Some(conn) = try_connect().await? {
         return Ok(conn);
@@ -43,17 +43,18 @@ pub async fn connect() -> Result<proto::Conn> {
     anyhow::bail!("daemon did not start, see {}", dir.join("daemon.log").display())
 }
 
-/// `None` if no daemon is listening, or if the one listening was older and got stopped.
+/// `None` if no daemon is listening, or if the one listening spoke another protocol and got stopped.
 async fn try_connect() -> Result<Option<proto::Conn>> {
     let Ok(stream) = UnixStream::connect(proto::socket_path()).await else { return Ok(None) };
     let mut conn = proto::frame(stream);
-    // A daemon predating the handshake fails to parse here and counts as older.
+    // A daemon predating the handshake or the `protocol` field fails to parse here and gets replaced too. Any mismatch
+    // restarts it: frames of another protocol may not parse on either side.
     let version = match proto::recv::<Msg>(&mut conn).await {
-        Ok(Some(Msg::Hello { version })) if !proto::older(&version, proto::VERSION) => return Ok(Some(conn)),
-        Ok(Some(Msg::Hello { version })) => version,
+        Ok(Some(Msg::Hello { protocol, .. })) if protocol == proto::PROTOCOL => return Ok(Some(conn)),
+        Ok(Some(Msg::Hello { version, protocol })) => format!("{version} (protocol {protocol})"),
         _ => "unknown".into(),
     };
-    eprintln!("hum: restarting daemon {version} -> {}", proto::VERSION);
+    eprintln!("hum: restarting daemon {version} -> {} (protocol {})", proto::VERSION, proto::PROTOCOL);
     stop(conn).await?;
     Ok(None)
 }

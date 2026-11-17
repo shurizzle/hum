@@ -95,6 +95,17 @@ fn cover(f: &mut Frame, images: &mut Images, url: Option<&str>, area: Rect) {
     images.draw(f, url, area);
 }
 
+/// Web player's heart: green when liked, outline otherwise; nothing for what cannot be liked.
+fn heart(f: &mut Frame, hits: &mut Vec<(Rect, Hit)>, area: Rect, uri: &str, liked: Option<bool>, outline: bool) {
+    let (label, color) = match liked {
+        Some(true) => ("♥", GREEN),
+        Some(false) if outline => ("♡", GRAY),
+        _ => return,
+    };
+    f.render_widget(Paragraph::new(label).fg(color), area);
+    hits.push((area, Hit::Like(uri.to_string())));
+}
+
 fn name_style(playing: bool) -> Style {
     Style::new().fg(if playing { GREEN } else { TEXT }).add_modifier(Modifier::BOLD)
 }
@@ -135,6 +146,7 @@ const KEYS: &[(&str, &str)] = &[
     ("+ / -", "Volume"),
     ("s / r", "Shuffle / repeat"),
     ("a", "Add to queue"),
+    ("f / F", "Like selected / playing track"),
     ("d", "Remove from queue (queue focused)"),
     ("J / K", "Move in queue (queue focused)"),
     ("P", "Play open page"),
@@ -382,11 +394,13 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
                 let [info, _, play] =
                     Layout::vertical([Constraint::Min(4), Constraint::Length(1), Constraint::Length(1)]).areas(text);
                 f.render_widget(Paragraph::new(lines), Rect { y: info.y + info.height.saturating_sub(4), ..info });
-                let hint = Rect { x: play.x + 11, width: play.width.saturating_sub(11), ..play };
+                let hint = Rect { x: play.x + 11, width: 1.min(play.width.saturating_sub(11)), ..play };
+                let like = Rect { x: play.x + 14, width: 1.min(play.width.saturating_sub(14)), ..play };
                 let play = Rect { width: 10.min(play.width), ..play };
                 f.render_widget(Paragraph::new(" ▶  Play ").style(Style::new().fg(Color::Black).bg(GREEN).bold()), play);
                 f.render_widget(Paragraph::new("P").fg(DIM), hint);
                 hits.push((play, Hit::Cmd(play_context(header.uri.clone()))));
+                heart(f, &mut hits, like, &header.uri, super::liked(&app.saved, &app.library, &header.uri), true);
             }
             Blk::Loading => {
                 f.render_widget(Paragraph::new("Loading…").fg(GRAY), Rect { y: y + 1, height: 1, ..r });
@@ -455,8 +469,11 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
                 let label = if is_playing { "♫".to_string() } else { (idx + 1).to_string() };
                 let style = Style::new().fg(if is_playing { GREEN } else { GRAY });
                 f.render_widget(Paragraph::new(label).style(style).alignment(Alignment::Right), Rect { y, height: 1, ..num });
-                row(f, &mut app.images, item, Rect { x: rest.x + 1, width: rest.width.saturating_sub(1), ..rest }, 4, is_playing);
+                let [text, like] = Layout::horizontal([Constraint::Min(1), Constraint::Length(2)]).areas(rest);
+                row(f, &mut app.images, item, Rect { x: text.x + 1, width: text.width.saturating_sub(1), ..text }, 4, is_playing);
                 hits.push((r, Hit::Main(s, idx)));
+                let liked = super::liked(&app.saved, &app.library, &item.uri);
+                heart(f, &mut hits, Rect { y: y + ROW_H / 2, height: 1, width: 1, ..like }, &item.uri, liked, false);
             }
         }
         y += h;
@@ -523,8 +540,12 @@ fn draw_bar(f: &mut Frame, app: &mut App, area: Rect) {
         let [img, _, text] =
             Layout::horizontal([Constraint::Length(8), Constraint::Length(1), Constraint::Min(1)]).areas(left);
         cover(f, &mut app.images, Some(np.cover.as_str()), img);
-        let lines = vec![Line::from(np.name.as_str()).fg(TEXT).bold(), Line::from(np.artists.as_str()).fg(GRAY)];
-        f.render_widget(Paragraph::new(lines), Rect { y: text.y + 1, height: 2, ..text });
+        let name = Line::from(np.name.as_str()).fg(TEXT).bold();
+        let like_x = text.x + (name.width() as u16 + 1).min(text.width.saturating_sub(1));
+        let lines = vec![name, Line::from(np.artists.as_str()).fg(GRAY)];
+        f.render_widget(Paragraph::new(lines), Rect { y: text.y + 1, height: 2, width: text.width.saturating_sub(2), ..text });
+        let liked = app.liked(&np.uri);
+        heart(f, &mut app.hits, Rect { x: like_x, y: text.y + 1, width: 1, height: 1 }, &np.uri, liked, true);
     }
 
     // Center: controls and progress.

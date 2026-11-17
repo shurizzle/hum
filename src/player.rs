@@ -391,6 +391,14 @@ impl Mirror {
             Ok(m.headers.get("Spotify-Connection-Id").cloned().unwrap_or_default())
         })?;
         let mut updates = session.dealer().listen_for("hm://connect-state/v1/cluster", Message::from_raw::<ClusterUpdate>)?;
+        // Liked songs/albums/artists/shows (`hm://collection/<kind>/<user>`), the playlist rootlist and
+        // playlist contents.
+        let uri = |m: Message| Ok(m.uri);
+        let mut library = futures_util::stream::select_all([
+            session.dealer().listen_for("hm://collection/", uri)?,
+            session.dealer().listen_for("hm://playlist/v2/user/", uri)?,
+            session.dealer().listen_for("hm://playlist/v2/playlist/", uri)?,
+        ]);
         session.dealer().start().await?;
         let req = PutStateRequest {
             member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
@@ -412,6 +420,15 @@ impl Mirror {
                 id = ids.next() => {
                     session.set_connection_id(&id.context("dealer closed")??);
                     Cluster::parse_from_bytes(&session.spclient().put_connect_state_request(&req).await?)?
+                }
+                Some(Ok(uri)) = library.next() => {
+                    log::debug!("library push: {uri}");
+                    if let Some(id) = uri.strip_prefix("hm://playlist/v2/playlist/") {
+                        crate::daemon::playlist_changed(format!("spotify:playlist:{id}"));
+                    } else if uri.ends_with("/rootlist") || uri.starts_with("hm://collection/") {
+                        crate::daemon::library_changed();
+                    }
+                    continue;
                 }
                 update = updates.next() => match update.context("dealer closed")? {
                     Ok(mut u) => u.cluster.take().unwrap_or_default(),

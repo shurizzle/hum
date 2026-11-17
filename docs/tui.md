@@ -18,6 +18,14 @@ Modeled on the Spotify desktop app.
   artists get a big header with cover and `▶ Play`. Search follows the web player's "All"
   tab: Top result (1 card), Songs (4 rows), then shelves for Artists, Albums, Playlists, Podcasts,
   Episodes. Artist pages are grouped by `add`: tracks first, then one shelf per kind.
+- **Hearts** (like the web player): green `♥` at the right of liked track rows, `♥`/`♡` next to
+  `▶ Play` in album/playlist/artist headers and after the playing track's name in the bar; all
+  clickable. Liked state comes from `areEntitiesInLibrary` for every page's items and the playing
+  track (`App::check_saved`, chunks of 50, unknown shown as not liked); a playlist is liked when it
+  is in Your Library. Toggling shows at once and is restored if Spotify refuses; Your
+  Library is reloaded after each change and on `Msg::Library` (changes from any device), which
+  also refetches the hearts on screen. `Msg::Playlist` reloads the open playlist in place, keeping
+  selection and focused panel.
 - **Right** (toggle `]`): Now playing with big cover, then next in queue: the first 20 of
   `NowPlaying.next` (the Connect cluster's queue, the one the official clients show), resolved
   through the daemon (`Cmd::Tracks` → `Msg::Tracks`, spclient metadata, one request) and cached by
@@ -80,6 +88,8 @@ get their title and cover from the first response (`Api::open` returns the root 
 | `+` / `-` | Volume |
 | `s` / `r` | Shuffle / repeat |
 | `a` | Add the selected track/episode to the queue (`Cmd::Queue`; works with no active device) |
+| `f` | Like/unlike the selected track, album, artist, playlist (`Api::set_saved`) |
+| `F` | Like/unlike the playing track |
 | `d` / `Delete` | Remove the selected track from the queue (queue focused) |
 | `J` / `K` | Move the selected queue track down / up (queue focused) |
 | `P` | Play the open playlist/album/artist from the start (same as `▶ Play`, hint shown next to it) |
