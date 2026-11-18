@@ -13,7 +13,8 @@ Defined in `src/proto.rs`.
 | `Load { context_uri, tracks, track }` | Play a context (playlist, album, artist, station) or a track list on the `hum` device. `track` is the uri to start from. A single loose track (`tracks: [uri]`, no context) plays inside its Song Radio playlist. |
 | `PlayPause`, `Next`, `Prev` | Player (SDK) controls |
 | `Seek(ms)` | Player seek |
-| `Volume(u16)` | 0..=65535 |
+| `Volume(u16)` | 0..=65535; unmutes first when muted |
+| `Mute(bool)` | Silence playback keeping `volume` (see [playback.md](playback.md)); no-op while another device plays |
 | `Shuffle(bool)`, `Repeat(Repeat)` | Web API; `Repeat` is `"off"`, `"context"` or `"track"` |
 | `Queue(uri)` | `POST /me/player/queue` on the active device; with none active, first transfers playback to hum paused (`Player::activate`), retrying while the transfer registers |
 | `Unqueue { uri, nth }` | Remove the `nth` (0-based) occurrence of `uri` in `NowPlaying.next` via a Connect `set_queue` command |
@@ -49,7 +50,7 @@ Commands on a connection are handled in order, and the daemon closes it on EOF. 
 `NowPlaying`: `uri`, `name`, `artists`, `album`, `cover` (url, ~300 px), `context` (playlist/
 album/artist uri the track plays from, empty for loose tracks), `duration_ms`,
 `position_ms` (at the time of the event; clients extrapolate while `playing`), `position_at_ms`
-(unix ms when `position_ms` was measured), `playing`, `volume`,
+(unix ms when `position_ms` was measured), `playing`, `volume`, `muted` (`volume` is then the level to restore),
 `shuffle`, `repeat` (`Repeat`; both from the Connect cluster of the active device),
 `next` (upcoming track uris from the Connect cluster, max 100, kept current for every device;
 the TUI's queue panel shows them).

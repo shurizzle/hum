@@ -20,6 +20,8 @@ pub enum Cmd {
     Prev,
     Seek(u32),
     Volume(u16),
+    /// Silence playback keeping `volume`; a `Volume` while muted unmutes.
+    Mute(bool),
     Shuffle(bool),
     Repeat(Repeat),
     /// Add a track or episode to the queue; activates hum (paused) if no device is active.
@@ -102,6 +104,9 @@ pub struct NowPlaying {
     pub position_at_ms: u64,
     pub playing: bool,
     pub volume: u16,
+    /// Muted by `Cmd::Mute`; `volume` keeps the level to restore.
+    #[serde(default)]
+    pub muted: bool,
     /// Shuffle and repeat (context or track) of the active device, from the Connect cluster.
     #[serde(default)]
     pub shuffle: bool,

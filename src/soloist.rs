@@ -300,17 +300,35 @@ pub async fn run(
     let mut last_playing = false;
     let mut restoring = saved;
     let mut filling = String::new();
+    // Soloist has no mute: muting sets volume 0 and keeps here the level to restore.
+    let mut muted_from: Option<u16> = None;
     loop {
         tokio::select! {
             msg = ws.next() => {
                 let Some(msg) = msg else { bail!("Soloist ws closed") };
                 let WsMessage::Text(txt) = msg? else { continue };
                 let Ok(ev) = serde_json::from_str::<Value>(&txt) else { continue };
-                handle_event(&ev, state, loaded, remote, &mut last_playing, &mut restoring);
+                handle_event(&ev, state, loaded, remote, &mut last_playing, &mut restoring, muted_from.is_some());
                 fill_missing(state, session, &mut filling);
             }
             cmd = rx.recv() => {
-                let Some(cmd) = cmd else { return Ok(()) };
+                let Some(mut cmd) = cmd else { return Ok(()) };
+                if cmd["cmd"] == "mute" {
+                    let on = cmd["arg"].as_bool().unwrap_or(false);
+                    let vol = match (on, muted_from) {
+                        (true, None) => {
+                            muted_from = Some(state.borrow().volume);
+                            0
+                        }
+                        (false, Some(v)) => {
+                            muted_from = None;
+                            v
+                        }
+                        _ => continue,
+                    };
+                    state.send_if_modified(|np| std::mem::replace(&mut np.muted, on) != on);
+                    cmd = json!({"cmd": "volume", "arg": vol as f64 / u16::MAX as f64});
+                }
                 if let Some(ws_cmd) = translate(&cmd, last_playing) {
                     sink.send(WsMessage::Text(ws_cmd.to_string().into())).await?;
                 }
@@ -334,10 +352,15 @@ fn handle_event(
     remote: &AtomicBool,
     last_playing: &mut bool,
     restoring: &mut Option<u16>,
+    // Muted: the reported volume is the 0 hum set, not the level to show and save.
+    muted: bool,
 ) {
     match ev["type"].as_str().unwrap_or_default() {
         "playback_state" => {
-            let Some(s) = playback_value(ev) else { return };
+            let Some(mut s) = playback_value(ev) else { return };
+            if muted && let Some(o) = s.as_object_mut() {
+                o.remove("volume");
+            }
             if !ev["item"]["uri"].as_str().unwrap_or_default().is_empty() {
                 remote.store(false, Ordering::SeqCst);
                 loaded.store(true, Ordering::SeqCst);
@@ -360,6 +383,7 @@ fn handle_event(
                 None => {}
             }
         }
+        "volume_changed" if muted => {}
         "volume_changed" => {
             if let Some(vol) = ev["volume"].as_f64() {
                 let v = (vol.clamp(0.0, 100.0) / 100.0 * u16::MAX as f64) as u16;

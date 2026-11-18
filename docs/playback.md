@@ -66,6 +66,9 @@ chosen port from `<config>/soloist/ws.port`, and connects to `ws://127.0.0.1:<po
   hum is idle on that same track they come from the connect-state cluster (`Mirror::apply`).
 - **Commands**: the daemon's `player.command("toggle"|"next"|"prev"|"seek"|"volume", arg)` is
   translated to WebSocket commands (`play`/`pause`, `skip_next`, `skip_prev`, `seek`, `set_volume`).
+  Soloist has no mute: `mute true` keeps the current level, sends `set_volume 0` and sets
+  `muted`; while muted, reported volumes are ignored (neither shown nor saved); `mute false`
+  restores the kept level. A restart starts unmuted at the saved level.
   Everything else (`Load`, `Shuffle`, `Repeat`, `Queue`, `Transfer`) goes through the Web API against
   Soloist's Connect device, looked up by name on `GET /me/player/devices` and published to the device
   watch. The `player::Mirror` still mirrors playback on other devices, as for ECS.
@@ -115,6 +118,7 @@ JSON lines. Daemon → player on stdin, player → daemon on stdout prefixed wit
 | player → daemon | `{"error": "..."}` | SDK error; logged and forwarded to clients |
 | daemon → player | `{"token": "..."}` | Web token (hum app) |
 | daemon → player | `{"cmd": "toggle"\|"next"\|"prev"\|"seek"\|"volume", "arg": ...}` | SDK controls; `volume` is 0..1 |
+| daemon → player | `{"cmd": "mute", "arg": bool}` | Handled in `main.js`, not the SDK: `webContents.setAudioMuted`, answered with `{"state": {"muted": bool}}`; the SDK volume is untouched. A new Electron starts unmuted (the supervisor clears `muted` on restart) |
 
 ## Connect state mirror
 

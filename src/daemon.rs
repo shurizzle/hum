@@ -241,7 +241,15 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
         Cmd::Next => player.command("next", Value::Null),
         Cmd::Prev => player.command("prev", Value::Null),
         Cmd::Seek(ms) => player.command("seek", json!(ms)),
-        Cmd::Volume(v) => player.command("volume", json!(v as f64 / u16::MAX as f64)),
+        Cmd::Volume(v) => {
+            if shared.state.borrow().muted {
+                player.command("mute", json!(false));
+            }
+            player.command("volume", json!(v as f64 / u16::MAX as f64))
+        }
+        // The Web API cannot mute another device.
+        Cmd::Mute(_) if player.remote() => {}
+        Cmd::Mute(on) => player.command("mute", json!(on)),
         Cmd::Shuffle(on) => player.web(&format!("/me/player/shuffle?state={on}"), None).await?,
         Cmd::Repeat(r) => {
             let state = match r {

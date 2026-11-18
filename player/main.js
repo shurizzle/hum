@@ -55,7 +55,11 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   let msg;
   try { msg = JSON.parse(line); } catch { return; }
   if (msg.token !== undefined) call('setToken', msg.token);
-  if (msg.cmd) call('command', msg.cmd, msg.arg);
+  // Mute is Chromium's, not the SDK's: the Spotify volume stays untouched.
+  if (msg.cmd === 'mute') {
+    win?.webContents.setAudioMuted(!!msg.arg);
+    send({ state: { muted: !!msg.arg } });
+  } else if (msg.cmd) call('command', msg.cmd, msg.arg);
 });
 // Daemon gone: nothing left to play for.
 process.stdin.on('end', () => app.quit());

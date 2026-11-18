@@ -55,12 +55,12 @@ Remote control from scripts or key bindings (starts the daemon if needed, except
 hum play URI|LINK                   # track/album/playlist/artist; open.spotify.com links work too
 hum next | prev
 hum queue URI|LINK
-hum toggle play|shuffle|repeat|like
-hum set play|shuffle|like on|off
+hum toggle play|shuffle|repeat|like|mute
+hum set play|shuffle|like|mute on|off
 hum set repeat off|on|track         # on = repeat the context
 hum set volume 40                   # percent; +5 / -5 relative
 hum set position 90                 # seconds; +10 / -10 relative
-hum get play|shuffle|repeat|like|volume|position|queue|status [--json] [-f]
+hum get play|shuffle|repeat|like|volume|mute|position|queue|status [--json] [-f]
                                     # -f/--follow: a new line on every change; fails when no daemon runs
 hum devices                         # Connect devices, `*` = active
 hum transfer NAME|ID
@@ -70,7 +70,7 @@ hum completions zsh|bash|fish|...   # shell completion script
 ## Keys
 
 `hjkl`/arrows move · `Enter` open/play · `Esc` back · `/` search · `g` home · `Space` play/pause ·
-`n`/`b` next/previous · `Shift+←/→` seek · `+`/`-` volume · `s` shuffle · `r` repeat ·
+`n`/`b` next/previous · `Shift+←/→` seek · `+`/`-` volume · `m` mute · `s` shuffle · `r` repeat ·
 `a` add to queue · `f`/`F` like selected/playing · `[` / `]` library / now-playing panel · `c` pick device · `y` lyrics · `?` all keys · `q` quit · `Q` quit and stop the daemon.
 
 Full reference: [docs/tui.md](docs/tui.md).

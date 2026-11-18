@@ -276,7 +276,8 @@ async fn supervise(
         }
         loaded.store(false, Ordering::SeqCst);
         device.send_replace(None);
-        state.send_modify(|s| s.playing = false);
+        // A new engine starts unmuted.
+        state.send_modify(|s| (s.playing, s.muted) = (false, false));
         if rx.is_closed() {
             return;
         }
@@ -517,7 +518,7 @@ impl Mirror {
         np.next = next;
         (np.shuffle, np.repeat) = (shuffle, repeat);
         self.state.send_if_modified(|s| {
-            let np = NowPlaying { volume: s.volume, ..np };
+            let np = NowPlaying { volume: s.volume, muted: s.muted, ..np };
             let changed = *s != np;
             *s = np;
             changed
@@ -579,6 +580,9 @@ pub(crate) fn apply(np: &mut NowPlaying, s: &Value) -> bool {
     if let Some(v) = num("volume") {
         next.volume = (v.clamp(0.0, 1.0) * u16::MAX as f64) as u16;
     }
+    if let Some(m) = s.get("muted").and_then(Value::as_bool) {
+        next.muted = m;
+    }
     let changed = next != *np;
     *np = next;
     changed
@@ -598,6 +602,8 @@ mod tests {
         assert!(!apply(&mut np, &s));
         assert!(apply(&mut np, &json!({"volume": 1.0})));
         assert_eq!((np.uri.as_str(), np.volume), ("spotify:track:1", u16::MAX));
+        assert!(apply(&mut np, &json!({"muted": true})));
+        assert_eq!((np.muted, np.volume), (true, u16::MAX));
     }
 
     #[test]

@@ -144,6 +144,7 @@ const KEYS: &[(&str, &str)] = &[
     ("n / b", "Next / previous"),
     ("H / L, Shift+← / →", "Seek -/+10 s"),
     ("+ / -", "Volume"),
+    ("m", "Mute"),
     ("s / r", "Shuffle / repeat"),
     ("a", "Add to queue"),
     ("f / F", "Like selected / playing track"),
@@ -590,13 +591,16 @@ fn draw_bar(f: &mut Frame, app: &mut App, area: Rect) {
     button(f, app, queue, "≡", active(app.show_queue), Hit::ToggleQueue);
     let vol = np.volume as f64 / u16::MAX as f64;
     let speaker = match vol {
+        _ if np.muted => "🔇",
         v if v <= 0.0 => "🔇",
         v if v < 0.34 => "🔈",
         v if v < 0.67 => "🔉",
         _ => "🔊",
     };
     f.render_widget(Paragraph::new(speaker).fg(GRAY), icon);
-    f.render_widget(progress(vol), volume);
+    app.hits.push((icon, Hit::Mute));
+    let bar = progress(vol);
+    f.render_widget(if np.muted { bar.filled_style(Style::new().fg(GRAY)) } else { bar }, volume);
     app.hits.push((volume, Hit::Volume));
 }
 

@@ -55,6 +55,7 @@ pub enum Toggle {
     Repeat,
     /// Like/unlike the playing track
     Like,
+    Mute,
 }
 
 #[derive(Subcommand)]
@@ -65,6 +66,8 @@ pub enum Set {
     Repeat { state: RepeatArg },
     /// Like/unlike the playing track
     Like { state: OnOff },
+    /// Mute keeping the volume level
+    Mute { state: OnOff },
     /// Volume in percent; `+N`/`-N` is relative
     Volume {
         #[arg(allow_hyphen_values = true)]
@@ -88,6 +91,7 @@ pub enum Get {
     Like,
     /// Volume in percent
     Volume,
+    Mute,
     /// Position in the track, in seconds
     Position,
     /// Upcoming tracks, one per line
@@ -150,12 +154,14 @@ pub async fn run(remote: Remote) -> Result<()> {
         Remote::Toggle(Toggle::Play) => Cmd::PlayPause,
         Remote::Toggle(Toggle::Shuffle) => Cmd::Shuffle(!np.shuffle),
         Remote::Toggle(Toggle::Repeat) => Cmd::Repeat(if np.repeat == Repeat::Off { Repeat::Context } else { Repeat::Off }),
+        Remote::Toggle(Toggle::Mute) => Cmd::Mute(!np.muted),
         Remote::Toggle(Toggle::Like) => return like(&mut conn, &mut np, None).await,
         Remote::Set(Set::Like { state }) => return like(&mut conn, &mut np, Some(state.into())).await,
         Remote::Set(Set::Play { state }) if bool::from(state) == np.playing => return Ok(()),
         Remote::Set(Set::Play { .. }) => Cmd::PlayPause,
         Remote::Set(Set::Shuffle { state }) => Cmd::Shuffle(state.into()),
         Remote::Set(Set::Repeat { state }) => Cmd::Repeat(state.into()),
+        Remote::Set(Set::Mute { state }) => Cmd::Mute(state.into()),
         Remote::Set(Set::Volume { level }) => Cmd::Volume(volume(&level, np.volume)?),
         Remote::Set(Set::Position { seconds }) => Cmd::Seek(seek(&seconds, &np, proto::now_ms())?),
         Remote::Devices => {
@@ -246,6 +252,7 @@ impl View {
                 flag(self.liked.as_ref().is_some_and(|(_, on)| *on))
             }
             Get::Volume => percent(np.volume).to_string(),
+            Get::Mute => flag(np.muted),
             Get::Position => (np.position(proto::now_ms()) / 1000).to_string(),
             Get::Queue => {
                 if self.queue.as_ref().is_none_or(|(next, _)| *next != np.next) {

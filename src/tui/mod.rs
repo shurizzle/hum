@@ -172,6 +172,8 @@ pub enum Hit {
     Cmd(Cmd),
     Seek,
     Volume,
+    /// Speaker icon: mute toggle.
+    Mute,
     Search,
     Home,
     Back,
@@ -918,6 +920,7 @@ impl App {
             KeyCode::Char('b') => return vec![Cmd::Prev],
             KeyCode::Char('+' | '=') => return vec![Cmd::Volume(self.np.volume.saturating_add(VOLUME_STEP))],
             KeyCode::Char('-') => return vec![Cmd::Volume(self.np.volume.saturating_sub(VOLUME_STEP))],
+            KeyCode::Char('m') => return vec![Cmd::Mute(!self.np.muted)],
             KeyCode::Char('s') => {
                 self.shuffle = !self.shuffle;
                 return vec![Cmd::Shuffle(self.shuffle)];
@@ -1007,6 +1010,7 @@ impl App {
                     }
                     Hit::Seek => return vec![Cmd::Seek((ratio * self.np.duration_ms as f64) as u32)],
                     Hit::Volume => return vec![Cmd::Volume((ratio * u16::MAX as f64) as u16)],
+                    Hit::Mute => return vec![Cmd::Mute(!self.np.muted)],
                     Hit::Search => self.search = Some(String::new()),
                     Hit::Home => self.home(),
                     Hit::Back => self.back(),

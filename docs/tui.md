@@ -33,7 +33,8 @@ Modeled on the Spotify desktop app.
   limited for the developer app. In the queue, `d`/`Delete` removes the selected track
   (`Cmd::Unqueue`) and `J`/`K` move it (`Cmd::MoveQueue`), shown at once; an error restores it.
 - **Bottom**: player bar with cover, `⇄ ⏮ ▶/⏸ ⏭ ↻`, progress, lyrics `♫`, device picker `⊡`, queue toggle,
-  volume with a level speaker icon (`🔇 🔈 🔉 🔊`).
+  volume with a level speaker icon (`🔇 🔈 🔉 🔊`); click the icon or `m` to mute (`🔇`, gray bar
+  at the kept level).
 - **Lyrics** (`y` or `♫` in the bar): replace the main page; requested from the daemon (`Cmd::Lyrics`) for the
   playing track and again when it changes. Synced lyrics highlight the current line in green (past
   lines dim, empty lines as `♪`) and keep it a third from the top; unsynced ones are shown from the
@@ -85,7 +86,8 @@ get their title and cover from the first response (`Api::open` returns the root 
 | `Space` | Play/pause |
 | `n` / `b` | Next / previous |
 | `H` / `L`, `Shift+←/→` | Seek ∓10 s |
-| `+` / `-` | Volume |
+| `+` / `-` | Volume (unmutes) |
+| `m` | Mute / unmute |
 | `s` / `r` | Shuffle / repeat; repeat cycles off, context, track (`↻¹`). Toggled locally, then follow `NowPlaying.shuffle`/`repeat` when another client or device changes them |
 | `a` | Add the selected track/episode to the queue (`Cmd::Queue`; works with no active device) |
 | `f` | Like/unlike the selected track, album, artist, playlist (`Api::set_saved`) |
