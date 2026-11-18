@@ -39,6 +39,9 @@ both see the same now-playing state.
 - Follows the account's Connect cluster over the librespot dealer (hidden observer device): restores
   the last playback on startup and mirrors playback on other devices into `NowPlaying`, routing
   controls to them through the Web API. See [docs/playback.md](docs/playback.md).
+- With the Soloist engine, publishes OS media controls itself (MPRIS on Linux, Now Playing on
+  macOS; `src/media/`); ECS gets them from Chromium. On macOS the daemon's main thread serves the
+  main run loop and tokio runs on another thread. See [docs/playback.md](docs/playback.md).
 - Logs the account type (`type`, `catalogue`, country) 3 s after login, for diagnosing playback
   refusals.
 - Forwards `warn`/`error` log records (daemon, player, librespot) to all clients as

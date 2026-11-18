@@ -57,8 +57,9 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
 
 ### Soloist engine
 
-- No MPRIS / macOS Now Playing with Soloist: the ECS engine gets those from Chromium's media session;
-  Soloist exposes none, so hum does not publish them when running on Soloist.
+- MPRIS / macOS Now Playing with Soloist are published by the daemon itself (`src/media/`), not by
+  the engine. MPRIS `xesam:artist` holds the joined artist names as one entry (`NowPlaying` keeps
+  them joined). macOS Now Playing is only cross-checked from Linux, not tried on a Mac yet.
 - The Soloist binary is user-installed and closed-source; Spotify forbids redistributing it, so hum
   never downloads it. Builds expire 90 days after their build date (exit `10`): the daemon surfaces an
   error and the user must download a fresh build.

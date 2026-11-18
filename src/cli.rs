@@ -246,7 +246,7 @@ impl View {
                 flag(self.liked.as_ref().is_some_and(|(_, on)| *on))
             }
             Get::Volume => percent(np.volume).to_string(),
-            Get::Position => (position(np, proto::now_ms()) / 1000).to_string(),
+            Get::Position => (np.position(proto::now_ms()) / 1000).to_string(),
             Get::Queue => {
                 if self.queue.as_ref().is_none_or(|(next, _)| *next != np.next) {
                     let next = np.next.clone();
@@ -360,15 +360,9 @@ fn volume(level_arg: &str, current: u16) -> Result<u16> {
     Ok((pct.clamp(0, 100) * u16::MAX as i64 / 100) as u16)
 }
 
-/// Current position in ms, extrapolated while playing.
-fn position(np: &NowPlaying, now_ms: u64) -> u64 {
-    let elapsed = if np.playing { now_ms.saturating_sub(np.position_at_ms) } else { 0 };
-    (np.position_ms as u64 + elapsed).min(np.duration_ms as u64)
-}
-
 /// Target position in ms for `seconds` (absolute or `+N`/`-N` from the extrapolated position).
 fn seek(seconds: &str, np: &NowPlaying, now_ms: u64) -> Result<u32> {
-    let current = position(np, now_ms) as i64;
+    let current = np.position(now_ms) as i64;
     // Relative to the position in seconds, so sub-second precision survives.
     let target = level("position", seconds, current / 1000)? * 1000 + if seconds.starts_with(['+', '-']) { current % 1000 } else { 0 };
     Ok(target.clamp(0, np.duration_ms as i64) as u32)

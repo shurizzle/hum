@@ -11,7 +11,7 @@ use librespot_core::{Session, SessionConfig};
 use serde_json::{Value, json};
 use tokio::{
     net::{UnixListener, UnixStream},
-    sync::{Notify, broadcast, watch},
+    sync::{Notify, broadcast, mpsc, watch},
 };
 
 use crate::{
@@ -110,6 +110,7 @@ pub async fn run() -> Result<()> {
     }
 
     let engine = crate::setup::engine().context("no playback engine set up: run `hum` first")?;
+    let soloist = matches!(engine, crate::setup::Engine::Soloist { .. });
     let (state_tx, state_rx) = watch::channel(NowPlaying::default());
     let shared = Arc::new(Shared {
         player: Player::spawn(state_tx, engine, session.clone()),
@@ -118,6 +119,19 @@ pub async fn run() -> Result<()> {
         clients: AtomicUsize::new(0),
         shutdown: Notify::new(),
     });
+    if soloist {
+        // ECS gets OS media controls from Chromium's media session; Soloist has none.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::media::spawn(shared.state.clone(), tx);
+        let shared = shared.clone();
+        tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                if let Err(e) = handle(cmd, &shared).await {
+                    log::warn!("media control: {e:#}");
+                }
+            }
+        });
+    }
     let mut tick = tokio::time::interval(Duration::from_secs(30));
     let mut idle_since: Option<Instant> = None;
     log::info!("listening on {}", path.display());

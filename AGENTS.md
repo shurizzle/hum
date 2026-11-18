@@ -29,6 +29,7 @@ src/proto.rs       IPC types and framing
 src/daemon.rs      librespot session (tokens), socket server, command dispatch, log forwarding
 src/player.rs      supervised player child (ECS or Soloist), Web API calls for its device
 src/soloist.rs     Spotify Soloist backend: pairing (token-exchange + DPoP) and WebSocket runtime
+src/media/         OS media controls for Soloist: MPRIS (zbus, Linux), Now Playing (objc2, macOS)
 player/            engine JS/HTML embedded into the binary
 src/setup.rs       engine selection; installs the pinned Electron / pairs Soloist before first daemon start
 src/spawn.rs       connect-or-spawn, version check, kill

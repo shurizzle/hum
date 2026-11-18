@@ -52,3 +52,16 @@ opt-level = 3
 [profile.release]
 lto = "fat"
 codegen-units = 1
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# MPRIS for the Soloist engine (src/media/mpris.rs); pure Rust D-Bus, so musl builds stay static.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Now Playing for the Soloist engine (src/media/now_playing.rs).
+block2 = "0.6"
+dispatch2 = { version = "0.3", default-features = false, features = ["std"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSImage", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSDictionary", "NSGeometry", "NSObjCRuntime", "NSObject", "NSPort", "NSRunLoop", "NSString", "NSValue"] }
+objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "MPMediaItem", "MPNowPlayingInfoCenter", "MPRemoteCommand", "MPRemoteCommandCenter", "MPRemoteCommandEvent"] }

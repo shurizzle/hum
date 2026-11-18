@@ -3,6 +3,7 @@ mod auth;
 mod cache;
 mod cli;
 mod daemon;
+mod media;
 mod meta;
 mod player;
 mod proto;
@@ -37,12 +38,32 @@ enum Sub {
     Remote(cli::Remote),
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     // Only ring is compiled in; install it explicitly so a dependency enabling another backend
     // later cannot make rustls refuse to guess. Process-wide, before any TLS connection.
     let _ = rustls::crypto::ring::default_provider().install_default();
-    match Args::parse().cmd {
+    let args = Args::parse();
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    // Now Playing remote commands arrive on the main run loop, so the daemon runs beside it.
+    #[cfg(target_os = "macos")]
+    if matches!(args.cmd, Some(Sub::Daemon)) {
+        std::thread::spawn(move || {
+            let code = match rt.block_on(run(args)) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("Error: {e:?}");
+                    1
+                }
+            };
+            std::process::exit(code);
+        });
+        media::main_loop();
+    }
+    rt.block_on(run(args))
+}
+
+async fn run(args: Args) -> Result<()> {
+    match args.cmd {
         None => {
             auth::ensure_login().await?;
             tui::run(spawn::connect().await?).await

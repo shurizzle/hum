@@ -6,6 +6,7 @@ A Spotify client for the terminal, laid out like the Spotify desktop app, with c
 - Playback runs in a background daemon: close every terminal and the music keeps playing.
 - Shows up as a Spotify Connect device named `hum`.
 - Keyboard and mouse.
+- Media keys and system now-playing: MPRIS on Linux, Control Center on macOS.
 - Audio through Spotify's official Web Playback SDK (Widevine), or optionally Spotify Soloist; no
   Spotify app needed.
 

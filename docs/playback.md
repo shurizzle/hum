@@ -69,12 +69,35 @@ chosen port from `<config>/soloist/ws.port`, and connects to `ws://127.0.0.1:<po
   watch. The `player::Mirror` still mirrors playback on other devices, as for ECS.
 - Exit `10` (expired build) and any other exit surface an error; `supervise` retries after 3 s.
 
+### OS media controls (`src/media/`)
+
+Soloist has no media session, so on this engine the daemon publishes one itself
+(`media::spawn`, only for `Engine::Soloist`; ECS keeps Chromium's). It mirrors the `NowPlaying`
+watch and sends controls back as daemon `Cmd`s, run through the same `handle` as client commands
+(so they reach remote devices too). Play and Pause become `PlayPause` only when the state differs.
+
+- **Linux** (`media/mpris.rs`): MPRIS on the session bus as `org.mpris.MediaPlayer2.hum` via `zbus`
+  (pure Rust, keeps musl builds static). `org.mpris.MediaPlayer2` (no raise/quit/track list) and
+  `.Player`: PlaybackStatus (`Stopped` with no track), Metadata (trackid
+  `/org/mpris/MediaPlayer2/Track/<base62 id>`, length, title, artist, album, artUrl), Volume,
+  Shuffle, LoopStatus (`None`/`Playlist`/`Track` ↔ `Repeat`), Position (extrapolated, no change
+  signal), Next/Previous/Play/Pause/PlayPause/Stop (= pause)/Seek/SetPosition; Rate fixed at 1, OpenUri
+  ignored. PropertiesChanged is emitted per changed field; `Seeked` when a report's position is more
+  than 1.5 s away from where the previous report extrapolates. No session bus: a `mpris:` warning.
+- **macOS** (`media/now_playing.rs`): `MPNowPlayingInfoCenter` (title, artist, album, duration,
+  elapsed time, rate, artwork downloaded from the cover URL) and `MPRemoteCommandCenter`
+  (toggle/play/pause/next/previous/change position). MediaPlayer delivers commands on the main
+  queue, so `hum daemon` on macOS runs the tokio runtime on a second thread while the main thread
+  serves the main run loop (`media::main_loop`, kept alive by an `NSMachPort`); every MediaPlayer
+  call is dispatched to the main queue.
+
 ## Components
 
 - `player/main.js`, `player/player.html`: the engine. Embedded in the binary (`include_str!`),
   written to `~/Library/Caches/hum/player/` and run as `<ECS> main.js` by the daemon.
 - `src/player.rs`: daemon side. Supervises the child (restart after 3 s on exit), relays messages,
   folds state into `NowPlaying`, calls the Web API for the player's device.
+- `src/media/`: MPRIS / macOS Now Playing for the Soloist engine (see above).
 
 ## Engine protocol
 

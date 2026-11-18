@@ -113,6 +113,14 @@ pub struct NowPlaying {
     pub next: Vec<String>,
 }
 
+impl NowPlaying {
+    /// Current position in ms, extrapolated while playing.
+    pub fn position(&self, now_ms: u64) -> u64 {
+        let elapsed = if self.playing { now_ms.saturating_sub(self.position_at_ms) } else { 0 };
+        (self.position_ms as u64 + elapsed).min(self.duration_ms as u64)
+    }
+}
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// IPC protocol version, independent of the app version: bump it on any change to `Cmd`, `Msg` or
 /// the types they carry. A daemon speaking another one is replaced.
