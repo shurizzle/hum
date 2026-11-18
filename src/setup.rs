@@ -2,12 +2,48 @@
 //! the VMP-signed build from this repository's `ecs-<version>` release on macOS, castLabs' own
 //! build on Linux (no signing needed there).
 
-use std::{io::Write, path::Path, process::Command};
+use std::{io::Write, path::Path, path::PathBuf, process::Command};
 
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 
-use crate::{auth, player};
+use crate::{auth, player, soloist};
+
+/// The playback engine the daemon runs. See docs/playback.md.
+pub enum Engine {
+    /// Spotify Web Playback SDK in castLabs Electron (Widevine).
+    Ecs,
+    /// Spotify Soloist, paired and driven over its WebSocket API.
+    Soloist { bin: PathBuf, key: String },
+}
+
+/// The engine already set up, without installing or pairing anything (used by the daemon). An
+/// existing Soloist pairing wins; otherwise an existing ECS install.
+pub fn engine() -> Option<Engine> {
+    if let (Some(key), Some(bin)) = (soloist::key(), soloist::binary()) {
+        return Some(Engine::Soloist { bin, key });
+    }
+    (std::env::var_os("HUM_ECS").is_some() || player::ecs_binary().exists()).then_some(Engine::Ecs)
+}
+
+/// Picks and, when nothing is set up yet, installs the playback engine (foreground, before the
+/// daemon starts): a prior setup wins; else an installed Soloist is paired; else ECS is downloaded.
+pub async fn ensure_engine() -> Result<Engine> {
+    if let (Some(key), Some(bin)) = (soloist::key(), soloist::binary()) {
+        return Ok(Engine::Soloist { bin, key });
+    }
+    if std::env::var_os("HUM_ECS").is_some() || player::ecs_binary().exists() {
+        ensure_ecs().await?;
+        return Ok(Engine::Ecs);
+    }
+    if let Some(bin) = soloist::binary() {
+        soloist::setup(&bin).await?;
+        let key = soloist::key().context("Soloist pairing did not store a key")?;
+        return Ok(Engine::Soloist { bin, key });
+    }
+    ensure_ecs().await?;
+    Ok(Engine::Ecs)
+}
 
 /// Ensures `<data dir>/ecs` holds `player::ECS_VERSION`. Skipped with `$HUM_ECS` (dev override) and
 /// for an install without a `VERSION` file (manual or dev install, left alone).

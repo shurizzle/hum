@@ -73,7 +73,7 @@ pub fn ecs_binary() -> PathBuf {
 }
 
 impl Player {
-    pub fn spawn(state: watch::Sender<NowPlaying>) -> Self {
+    pub fn spawn(state: watch::Sender<NowPlaying>, engine: crate::setup::Engine, session: Session) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (device_tx, device) = watch::channel(None);
         let loaded = Arc::new(AtomicBool::new(false));
@@ -96,7 +96,7 @@ impl Player {
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         });
-        tokio::spawn(supervise(rx, device_tx, state, loaded.clone(), Arc::clone(&remote)));
+        tokio::spawn(supervise(rx, device_tx, state, loaded.clone(), Arc::clone(&remote), engine, session));
         Self { tx, device, http: reqwest::Client::new(), loaded, remote, cluster }
     }
 
@@ -263,9 +263,15 @@ async fn supervise(
     state: Arc<watch::Sender<NowPlaying>>,
     loaded: Arc<AtomicBool>,
     remote: Arc<AtomicBool>,
+    engine: crate::setup::Engine,
+    session: Session,
 ) {
     loop {
-        if let Err(e) = run_once(&mut rx, &device, &state, &loaded, &remote).await {
+        let result = match &engine {
+            crate::setup::Engine::Ecs => run_once(&mut rx, &device, &state, &loaded, &remote).await,
+            crate::setup::Engine::Soloist { bin, key } => crate::soloist::run(&mut rx, &device, &state, &loaded, &remote, bin, key, &session).await,
+        };
+        if let Err(e) = result {
             log::error!("player: {e:#}");
         }
         loaded.store(false, Ordering::SeqCst);
@@ -546,7 +552,7 @@ pub fn play_body(context: &str, track: &str, position_ms: u32, next: &[String]) 
 }
 
 /// Merges a state report from the player; returns whether anything changed.
-fn apply(np: &mut NowPlaying, s: &Value) -> bool {
+pub(crate) fn apply(np: &mut NowPlaying, s: &Value) -> bool {
     let mut next = np.clone();
     let str = |k: &str| s.get(k).and_then(Value::as_str).map(str::to_string);
     let num = |k: &str| s.get(k).and_then(Value::as_f64);

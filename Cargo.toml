@@ -31,11 +31,15 @@ ratatui = "0.30"
 ratatui-image = { version = "11", default-features = false, features = ["crossterm", "tokio"] }
 regex = "1.13.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "http2", "charset", "rustls-tls-webpki-roots"] }
+# DPoP ES256 for Soloist pairing (token-exchange); ring is already the sole crypto backend.
+ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7.20", features = ["codec"] }
+# Soloist runtime: loopback ws:// to its WebSocket API (plain TCP handshake, no TLS).
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 
 [[bin]]
 name = "hum"

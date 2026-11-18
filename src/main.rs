@@ -7,6 +7,7 @@ mod meta;
 mod player;
 mod proto;
 mod setup;
+mod soloist;
 mod spawn;
 mod tui;
 

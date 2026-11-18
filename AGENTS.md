@@ -27,9 +27,10 @@ src/main.rs        entry and clap parsing: `hum`, `hum kill`, `hum daemon`, remo
 src/cli.rs         remote-control subcommands (play, toggle, set, get, devices, ...)
 src/proto.rs       IPC types and framing
 src/daemon.rs      librespot session (tokens), socket server, command dispatch, log forwarding
-src/player.rs      supervised ECS player child, Web API calls for its device
+src/player.rs      supervised player child (ECS or Soloist), Web API calls for its device
+src/soloist.rs     Spotify Soloist backend: pairing (token-exchange + DPoP) and WebSocket runtime
 player/            engine JS/HTML embedded into the binary
-src/setup.rs       installs the pinned Electron before the first daemon start
+src/setup.rs       engine selection; installs the pinned Electron / pairs Soloist before first daemon start
 src/spawn.rs       connect-or-spawn, version check, kill
 src/auth.rs        OAuth logins (session + hum app), web token refresh, paths
 src/cache.rs       persistent LMDB cache (albums, artists, track metadata, covers)

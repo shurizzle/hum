@@ -55,7 +55,9 @@ both see the same now-playing state.
   `proto::PROTOCOL`). A daemon with another protocol (or one that does not send `Hello`) is
   stopped and replaced; app versions alone never restart it.
 - `hum start` only connects (spawning the daemon if needed) and exits.
-- `hum kill` sends `Cmd::Shutdown`, waits 5 s, then `kill -9` using `hum.pid`.
+- `hum kill` sends `Cmd::Shutdown` and stays connected until the daemon closes the socket (closing
+  at once made the daemon fail its hello write and never read the command); after 5 s, `kill -9`
+  using `hum.pid`.
 
 ## Remote-control subcommands
 
@@ -93,6 +95,8 @@ both see the same now-playing state.
 | `~/Library/Application Support/hum/hashes.json` | pathfinder persisted query hashes |
 | `~/Library/Application Support/hum/last-page.json` | Last open playlist/album/artist (client resume) |
 | `~/Library/Application Support/hum/ecs/` (Linux: `$XDG_DATA_HOME/hum/ecs/`) | castLabs Electron, installed automatically before the first daemon start (`setup::ensure_ecs`); `VERSION` holds the installed `ECS_VERSION` |
+| `~/Library/Application Support/hum/soloist-key` (Linux: `$XDG_CONFIG_HOME/hum/soloist-key`) | Spotify Soloist developer API key, written after pairing; its presence selects the Soloist engine (`src/soloist.rs`, [docs/playback.md](docs/playback.md)) |
+| `~/Library/Application Support/hum/soloist/` (Linux: `$XDG_CONFIG_HOME/hum/soloist/`) | Soloist session and state (`-D`); `ws.port` holds the runtime WebSocket port |
 | `~/Library/Caches/hum/player/` | Engine files written from the binary |
 | `~/Library/Caches/hum/cache.db/` | Disk cache (LMDB, shared by daemon and clients): albums, artists, track metadata, covers. See [docs/spotify-apis.md](docs/spotify-apis.md#disk-cache) |
 | `~/Library/Application Support/hum/daemon.log` (Linux: `$XDG_STATE_HOME/hum/daemon.log`) | Daemon stdout/stderr |

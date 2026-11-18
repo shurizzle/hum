@@ -109,9 +109,10 @@ pub async fn run() -> Result<()> {
         });
     }
 
+    let engine = crate::setup::engine().context("no playback engine set up: run `hum` first")?;
     let (state_tx, state_rx) = watch::channel(NowPlaying::default());
     let shared = Arc::new(Shared {
-        player: Player::spawn(state_tx),
+        player: Player::spawn(state_tx, engine, session.clone()),
         session,
         state: state_rx,
         clients: AtomicUsize::new(0),

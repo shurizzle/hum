@@ -55,6 +55,20 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
   too; logged but kept out of the status bar.
 - Playback state is event-driven; clients extrapolate position between events.
 
+### Soloist engine
+
+- No MPRIS / macOS Now Playing with Soloist: the ECS engine gets those from Chromium's media session;
+  Soloist exposes none, so hum does not publish them when running on Soloist.
+- The Soloist binary is user-installed and closed-source; Spotify forbids redistributing it, so hum
+  never downloads it. Builds expire 90 days after their build date (exit `10`): the daemon surfaces an
+  error and the user must download a fresh build.
+- Soloist's Web API device is matched **by name** (`hum`) on `/me/player/devices`:
+  `shortcut: breaks if another Connect device is also named hum; switch to the connect-state device id
+  if Soloist ever exposes it`.
+- Pairing uses an internal `/api/token` token-exchange and Soloist's zeroconf `addUser`, both
+  undocumented; a Spotify change could break pairing. The one-time pairing is redone (delete
+  `soloist-key`) if it stops working.
+
 ## Other
 
 - Caches have no eviction: in-memory covers grow for the life of a client (sizes left over from

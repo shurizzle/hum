@@ -21,7 +21,7 @@ pub async fn connect() -> Result<proto::Conn> {
         return Ok(conn);
     }
     // First start, or a new pinned Electron: install it while still in the terminal.
-    crate::setup::ensure_ecs().await?;
+    crate::setup::ensure_engine().await?;
     let dir = auth::state_dir();
     std::fs::create_dir_all(&dir)?;
     let log = File::create(dir.join("daemon.log"))?;
@@ -75,12 +75,11 @@ pub async fn kill() -> Result<()> {
 /// Asks the daemon to shut down; kills it by pid if it does not exit within 5 s.
 async fn stop(mut conn: proto::Conn) -> Result<()> {
     let _ = proto::send(&mut conn, &Cmd::Shutdown).await;
-    drop(conn);
-    for _ in 0..50 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        if UnixStream::connect(proto::socket_path()).await.is_err() {
-            return Ok(());
-        }
+    // Stay connected until the daemon exits: closing at once makes it fail writing its hello and
+    // drop the connection without reading the command.
+    let drained = async { while let Ok(Some(_)) = proto::recv::<Msg>(&mut conn).await {} };
+    if tokio::time::timeout(Duration::from_secs(5), drained).await.is_ok() {
+        return Ok(());
     }
     kill_pid();
     let _ = std::fs::remove_file(proto::socket_path());

@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 
 const REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 
-// librespot's keymaster app: its session tokens unlock the internal (pathfinder) APIs.
-const SESSION_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
+// librespot's keymaster app: its session tokens unlock the internal (pathfinder) APIs, and are the
+// subject token of the Soloist pairing token-exchange (`soloist::mint_code`).
+pub const SESSION_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
 const SESSION_SCOPES: &[&str] = &[
     "playlist-read",
     "playlist-read-collaborative",

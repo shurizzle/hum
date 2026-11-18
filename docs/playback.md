@@ -1,8 +1,73 @@
 # Playback
 
-Audio comes from Spotify's official **Web Playback SDK** running inside **castLabs Electron for
-Content Security (ECS)**, which ships Google's Widevine CDM. librespot's own player is not used:
-Spotify refuses its audio keys on some accounts (see [known-issues.md](known-issues.md)).
+Audio comes from one of two **engines**. By default the official **Web Playback SDK** runs inside
+**castLabs Electron for Content Security (ECS)**, which ships Google's Widevine CDM. Optionally hum
+drives **Spotify Soloist** (the official headless Connect player) instead — no Widevine, lossless.
+librespot's own player is not used: Spotify refuses its audio keys on some accounts (see
+[known-issues.md](known-issues.md)).
+
+## Engine selection (`src/setup.rs`)
+
+`setup::engine()` (daemon) / `setup::ensure_engine()` (foreground, before the daemon): whatever is
+already set up wins, else an installed Soloist is paired, else ECS is downloaded.
+
+1. **Soloist** if `<config>/soloist-key` exists (written only after a successful pairing) **and** the
+   `soloist` binary is found (`$HUM_SOLOIST`, else on `PATH`).
+2. else **ECS** if `$HUM_ECS` is set or `<data>/ecs` is installed.
+3. else, with nothing set up: pair an installed Soloist if present, otherwise download ECS.
+
+`Engine` is passed to `Player::spawn`; `player::supervise` runs `run_once` (ECS) or `soloist::run`
+over the same command/state channels, so the daemon's dispatch (`src/daemon.rs`) is engine-agnostic.
+
+## Soloist engine (`src/soloist.rs`)
+
+Soloist is a closed-source binary the user installs themselves (Spotify forbids redistribution; builds
+expire 90 days after their build date, exiting `10`). A per-user developer API key from
+<https://developer.spotify.com/dashboard/soloist> is required.
+
+### Pairing (`soloist::setup`, foreground, one-time)
+
+No browser, no device picker. hum mints Soloist's login itself on the librespot session:
+
+1. Prompt for the API key (opens the dashboard), get the session access token
+   (`session.login5().auth_token()`) and the canonical user id (`session.username()`).
+2. Spawn `soloist -n hum -k <key> -D <config>/soloist --pair -v`; read the zeroconf HTTP port from its
+   log line `Started ZeroConf service on port <N>`.
+3. `GET http://127.0.0.1:<N>/zc?action=getInfo` → `authInfo` (base64 protobuf):
+   `auth_info_id`, Soloist's `client_id`, and a `DpopBoundAuthCodeInfo { jkt, pkce_code_challenge }`.
+4. **Mint the auth code** — `POST https://accounts.spotify.com/api/token`, RFC 8693 token-exchange:
+   `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`, `client_id=<SESSION_CLIENT_ID>`,
+   `subject_token=<session token>`, `requested_token_type=urn:spotify:params:oauth:authorization_code`,
+   `audience=<Soloist client_id>`, `resource=urn:spotify:resources:connect`, `scope=streaming`,
+   `code_challenge=<pkce_code_challenge>`, `code_challenge_method=S256`, `dpop_jkt=<jkt>`, plus a
+   **`DPoP` header** (ES256 JWT, `ring` P-256 key). The first POST returns `400 use_dpop_nonce` with a
+   `DPoP-Nonce`; retry once with the nonce. The response `access_token` is the DPoP-bound code (bound
+   to Soloist's jkt/pkce, **no redirect_uri**).
+5. **Deliver** — `POST http://127.0.0.1:<N>/zc` `action=addUser`, `tokenType=auth_token`,
+   `userName=<user id>`, `blob` = base64 of the **plaintext** protobuf
+   `AuthToken { 1: auth_info_id, 10: DpopBoundAuthCode { 1: code } }` (no DH encryption for this
+   token type). Soloist replies `{"status":101}` and logs in; the session is stored in
+   `<config>/soloist`. On the child exiting 0, the key is written to `<config>/soloist-key` (mode 0600).
+
+### Runtime (`soloist::run`, mirrors `player::run_once`)
+
+First kills a Soloist left alive by a daemon that died without reaping it (pid in
+`<config>/soloist/soloist.pid`, checked to be `soloist`): a second instance on the same directory
+exits before serving. Spawns `soloist -n hum -k <key> -D <config>/soloist --ws 127.0.0.1:0 -i <saved volume>`, reads the
+chosen port from `<config>/soloist/ws.port`, and connects to `ws://127.0.0.1:<port>/`.
+
+- **Events → state**: `playback_state` and `volume_changed` frames are folded into `NowPlaying` via
+  `player::apply` (position extrapolated from `timestamp_ms`·`speed`; volume 0..100 → `u16`). Volume
+  is persisted to the disk cache (`volume` key) once the restored value is seen. The track Soloist
+  restores at startup comes with partial decorations (no artist names, `duration_ms: 0`) until it
+  plays: empty fields keep the state's values for the same uri, and the rest is fetched once via
+  `meta::tracks` (`soloist::fill_missing`).
+- **Commands**: the daemon's `player.command("toggle"|"next"|"prev"|"seek"|"volume", arg)` is
+  translated to WebSocket commands (`play`/`pause`, `skip_next`, `skip_prev`, `seek`, `set_volume`).
+  Everything else (`Load`, `Shuffle`, `Repeat`, `Queue`, `Transfer`) goes through the Web API against
+  Soloist's Connect device, looked up by name on `GET /me/player/devices` and published to the device
+  watch. The `player::Mirror` still mirrors playback on other devices, as for ECS.
+- Exit `10` (expired build) and any other exit surface an error; `supervise` retries after 3 s.
 
 ## Components
 
