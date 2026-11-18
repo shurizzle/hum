@@ -581,15 +581,22 @@ fn draw_bar(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Length(1),
-        Constraint::Length(4),
+        Constraint::Length(3),
         Constraint::Length(16),
     ])
     .areas(Rect { y: right.y + 1, height: 1, ..right });
     button(f, app, lyrics, "♫", active(app.show_lyrics), Hit::Lyrics);
     button(f, app, devices, "⊡", active(app.devices_open), Hit::Devices);
     button(f, app, queue, "≡", active(app.show_queue), Hit::ToggleQueue);
-    f.render_widget(Paragraph::new("vol").fg(GRAY), icon);
-    f.render_widget(progress(np.volume as f64 / u16::MAX as f64), volume);
+    let vol = np.volume as f64 / u16::MAX as f64;
+    let speaker = match vol {
+        v if v <= 0.0 => "🔇",
+        v if v < 0.34 => "🔈",
+        v if v < 0.67 => "🔉",
+        _ => "🔊",
+    };
+    f.render_widget(Paragraph::new(speaker).fg(GRAY), icon);
+    f.render_widget(progress(vol), volume);
     app.hits.push((volume, Hit::Volume));
 }
 

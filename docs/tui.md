@@ -33,7 +33,7 @@ Modeled on the Spotify desktop app.
   limited for the developer app. In the queue, `d`/`Delete` removes the selected track
   (`Cmd::Unqueue`) and `J`/`K` move it (`Cmd::MoveQueue`), shown at once; an error restores it.
 - **Bottom**: player bar with cover, `⇄ ⏮ ▶/⏸ ⏭ ↻`, progress, lyrics `♫`, device picker `⊡`, queue toggle,
-  volume.
+  volume with a level speaker icon (`🔇 🔈 🔉 🔊`).
 - **Lyrics** (`y` or `♫` in the bar): replace the main page; requested from the daemon (`Cmd::Lyrics`) for the
   playing track and again when it changes. Synced lyrics highlight the current line in green (past
   lines dim, empty lines as `♪`) and keep it a third from the top; unsynced ones are shown from the
