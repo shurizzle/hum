@@ -58,10 +58,12 @@ chosen port from `<config>/soloist/ws.port`, and connects to `ws://127.0.0.1:<po
 
 - **Events → state**: `playback_state` and `volume_changed` frames are folded into `NowPlaying` via
   `player::apply` (position extrapolated from `timestamp_ms`·`speed`; volume 0..100 → `u16`). Volume
-  is persisted to the disk cache (`volume` key) once the restored value is seen. The track Soloist
-  restores at startup comes with partial decorations (no artist names, `duration_ms: 0`) until it
+  is persisted to the disk cache (`volume` key) once the restored value is seen; `-i` takes whole
+  percents, so the expected value is the saved one rounded to a percent (otherwise saving never
+  resumes and every restart falls back to a stale value). The track Soloist restores at startup comes with partial decorations (no artist names, `duration_ms: 0`) until it
   plays: empty fields keep the state's values for the same uri, and the rest is fetched once via
-  `meta::tracks` (`soloist::fill_missing`).
+  `meta::tracks` (`soloist::fill_missing`). Its queue, shuffle and repeat are not reported: while
+  hum is idle on that same track they come from the connect-state cluster (`Mirror::apply`).
 - **Commands**: the daemon's `player.command("toggle"|"next"|"prev"|"seek"|"volume", arg)` is
   translated to WebSocket commands (`play`/`pause`, `skip_next`, `skip_prev`, `seek`, `set_volume`).
   Everything else (`Load`, `Shuffle`, `Repeat`, `Queue`, `Transfer`) goes through the Web API against

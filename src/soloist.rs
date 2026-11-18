@@ -257,7 +257,11 @@ pub async fn run(
 ) -> Result<()> {
     let dir = data_dir();
     let saved = Cache::global().read_any(VOLUME_KEY).and_then(|b| Some(u16::from_le_bytes(b.try_into().ok()?)));
-    let vol = saved.map(|v| (v as u32 * 100 / u16::MAX as u32).to_string()).unwrap_or_else(|| "40".into());
+    // Soloist takes whole percents: `restoring` must be the value it will report back, or saving
+    // never resumes.
+    let pct = saved.map(|v| (v as f64 / u16::MAX as f64 * 100.0).round() as u32);
+    let saved = pct.map(|p| (p as f64 / 100.0 * u16::MAX as f64) as u16);
+    let vol = pct.map_or_else(|| "40".into(), |p| p.to_string());
     kill_stale(&dir).await;
     let port_file = dir.join("ws.port");
     let _ = std::fs::remove_file(&port_file);

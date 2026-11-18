@@ -482,8 +482,16 @@ impl Mirror {
             // Whatever the SDK had loaded is stale now; resuming here starts from the mirrored state.
             self.loaded.store(false, Ordering::SeqCst);
         }
-        // An idle hum with its last state wins over an empty cluster.
+        // An idle hum with its last state wins over an empty cluster; only the queue and options
+        // come from the cluster then (Soloist restores the track itself, without them).
         if p.track.uri.is_empty() || (!remote && !self.state.borrow().uri.is_empty() && self.loaded.load(Ordering::SeqCst)) {
+            if !remote && self.state.borrow().uri == p.track.uri {
+                self.state.send_if_modified(|s| {
+                    let changed = (&s.next, s.shuffle, s.repeat) != (&next, shuffle, repeat);
+                    (s.next, s.shuffle, s.repeat) = (next, shuffle, repeat);
+                    changed
+                });
+            }
             return Ok(());
         }
         let playing = remote && p.is_playing && !p.is_paused;
