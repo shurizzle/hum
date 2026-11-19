@@ -68,6 +68,9 @@ chosen port from `<config>/soloist/ws.port`, and connects to `ws://127.0.0.1:<po
   while paused).
 - **Commands**: the daemon's `player.command("toggle"|"next"|"prev"|"seek"|"volume", arg)` is
   translated to WebSocket commands (`play`/`pause`, `skip_next`, `skip_prev`, `seek`, `set_volume`).
+  Soloist acks an applied command at once with `{"type":"command_result","command":...}` (a rejected
+  one gets `{"type":"error","message":...}`), but the matching `playback_state` comes 0.5-1.5 s
+  later (measured); the `play`/`pause` ack already sets `playing` and freezes the position.
   Soloist has no mute: `mute true` keeps the current level, sends `set_volume 0` and sets
   `muted`; while muted, reported volumes are ignored (neither shown nor saved) and a non-zero one
 (Soloist re-applies its level when play from idle activates its Connect device) is answered with

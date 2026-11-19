@@ -405,6 +405,19 @@ fn handle_event(
                 }
             }
         }
+        // Soloist acks an applied play/pause at once but reports the new `playback_state` 0.5-1.5 s
+        // later; rejected commands come as `error` instead.
+        "command_result" if matches!(ev["command"].as_str(), Some("play" | "pause")) => {
+            *last_playing = ev["command"] == "play";
+            let now = proto::now_ms();
+            state.send_if_modified(|np| {
+                if np.playing == *last_playing {
+                    return false;
+                }
+                (np.position_ms, np.position_at_ms, np.playing) = (np.position(now) as u32, now, *last_playing);
+                true
+            });
+        }
         _ => {}
     }
     loud
@@ -775,5 +788,22 @@ mod tests {
         assert!(!handle_event(&ev(0.0), &state, &loaded, &remote, &mut playing, &mut restoring, true));
         restoring = Some(0); // no cache write
         assert!(!handle_event(&ev(40.0), &state, &loaded, &remote, &mut playing, &mut restoring, false));
+    }
+
+    #[test]
+    fn play_pause_ack_updates_state() {
+        let now = proto::now_ms();
+        let state = watch::Sender::new(NowPlaying { duration_ms: 100_000, position_ms: 1_000, position_at_ms: now - 2_000, playing: true, ..Default::default() });
+        let (loaded, remote) = (AtomicBool::new(false), AtomicBool::new(false));
+        let (mut playing, mut restoring) = (true, None);
+        let ack = |c: &str| json!({"type": "command_result", "command": c});
+        handle_event(&ack("pause"), &state, &loaded, &remote, &mut playing, &mut restoring, false);
+        let np = state.borrow().clone();
+        assert!(!playing && !np.playing);
+        assert!((3_000..3_500).contains(&np.position_ms), "{}", np.position_ms);
+        handle_event(&ack("play"), &state, &loaded, &remote, &mut playing, &mut restoring, false);
+        assert!(playing && state.borrow().playing);
+        handle_event(&ack("seek"), &state, &loaded, &remote, &mut playing, &mut restoring, false);
+        assert!(state.borrow().playing);
     }
 }
