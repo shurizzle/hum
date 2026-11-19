@@ -48,6 +48,7 @@ src/tui/images.rs  async cover pipeline
 
 ```sh
 cargo build
+cargo build --tests  # first: compiling deps takes minutes; then run `cargo test` under any timeout
 cargo test
 cargo clippy          # keep it warning-free
 cargo run             # TUI; spawns the daemon

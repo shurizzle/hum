@@ -211,7 +211,6 @@ pub struct App {
     pub queue_area: Rect,
     focus: Focus,
     pub np: NowPlaying,
-    np_at: Instant,
     pub queue: Vec<Item>,
     /// Commands queued outside input handling, sent by the event loop.
     outbox: Vec<Cmd>,
@@ -282,7 +281,6 @@ pub async fn run(mut conn: Conn) -> Result<()> {
         queue_area: Rect::default(),
         focus: Focus::Main,
         np,
-        np_at: Instant::now(),
         queue: vec![],
         outbox: vec![],
         queue_cache: Default::default(),
@@ -372,7 +370,7 @@ async fn event_loop(
                         if (s.shuffle, s.repeat) != (app.np.shuffle, app.np.repeat) {
                             (app.shuffle, app.repeat) = (s.shuffle, s.repeat);
                         }
-                        (app.np, app.np_at) = (s, Instant::now());
+                        app.np = s;
                         app.check_saved(vec![app.np.uri.clone()]);
                         app.request_lyrics();
                         // After the assignment: the fallback reads `np.next`.
@@ -771,8 +769,8 @@ impl App {
     }
 
     pub fn position(&self) -> u32 {
-        let elapsed = if self.np.playing { self.np_at.elapsed().as_millis() as u32 } else { 0 };
-        (self.np.position_ms + elapsed).min(self.np.duration_ms)
+        // From `position_at_ms`, not arrival time: queue-only updates resend an old `position_ms`.
+        self.np.position(proto::now_ms()) as u32
     }
 
     fn selected(&self) -> Option<Item> {
