@@ -32,7 +32,7 @@ function nowPlaying(st) {
   const ms = navigator.mediaSession;
   ms.metadata = new MediaMetadata({
     title: st.name,
-    artist: st.artists,
+    artist: st.artists.join(', '),
     album: st.album,
     artwork: st.cover ? [{ src: st.cover, sizes: '300x300', type: 'image/jpeg' }] : [],
   });

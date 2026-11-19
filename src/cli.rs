@@ -273,7 +273,7 @@ impl View {
             }
             Get::Status if json => serde_json::to_string(&np)?,
             Get::Status if np.uri.is_empty() => String::new(),
-            Get::Status => format!("{} {} - {}", if np.playing { "▶" } else { "⏸" }, np.artists, np.name),
+            Get::Status => format!("{} {} - {}", if np.playing { "▶" } else { "⏸" }, np.artist_line(), np.name),
         })
     }
 }

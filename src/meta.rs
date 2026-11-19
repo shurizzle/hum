@@ -24,7 +24,7 @@ use crate::{
 pub struct Track {
     pub uri: String,
     pub name: String,
-    pub artists: String,
+    pub artists: Vec<String>,
     pub album: String,
     pub cover: String,
     pub duration_ms: u32,
@@ -32,7 +32,7 @@ pub struct Track {
 
 impl Track {
     pub fn item(&self) -> Item {
-        Item { uri: self.uri.clone(), name: self.name.clone(), sub: self.artists.clone(), image: Some(self.cover.clone()).filter(|c| !c.is_empty()), desc: String::new() }
+        Item { uri: self.uri.clone(), name: self.name.clone(), sub: self.artists.join(", "), image: Some(self.cover.clone()).filter(|c| !c.is_empty()), desc: String::new() }
     }
 
     /// `NowPlaying` (paused, at the start) for this track.
@@ -158,7 +158,7 @@ fn track(uri: &str, t: &metadata::Track) -> Track {
     Track {
         uri: uri.to_string(),
         name: t.name().to_string(),
-        artists: t.artist.iter().map(|a| a.name()).collect::<Vec<_>>().join(", "),
+        artists: t.artist.iter().map(|a| a.name().to_string()).collect(),
         album: album.map(|a| a.name().to_string()).unwrap_or_default(),
         cover: cover_url(&images),
         duration_ms: t.duration().max(0) as u32,

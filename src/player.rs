@@ -574,7 +574,7 @@ pub(crate) fn apply(np: &mut NowPlaying, s: &Value) -> bool {
     if let Some(uri) = str("uri") {
         next.uri = uri;
         next.name = str("name").unwrap_or_default();
-        next.artists = str("artists").unwrap_or_default();
+        next.artists = s.get("artists").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
         next.album = str("album").unwrap_or_default();
         next.cover = str("cover").unwrap_or_default();
         next.context = str("context").unwrap_or_default();
@@ -601,10 +601,11 @@ mod tests {
     #[test]
     fn apply_state_and_volume_only() {
         let mut np = NowPlaying::default();
-        let s = json!({"uri": "spotify:track:1", "name": "One", "artists": "A", "album": "X", "cover": "c",
+        let s = json!({"uri": "spotify:track:1", "name": "One", "artists": ["A", "B"], "album": "X", "cover": "c",
                        "duration_ms": 1000, "position_ms": 10, "playing": true, "volume": 0.5});
         assert!(apply(&mut np, &s));
         assert_eq!((np.name.as_str(), np.position_ms, np.playing, np.volume), ("One", 10, true, u16::MAX / 2));
+        assert_eq!(np.artists, ["A", "B"]);
         assert!(!apply(&mut np, &s));
         assert!(apply(&mut np, &json!({"volume": 1.0})));
         assert_eq!((np.uri.as_str(), np.volume), ("spotify:track:1", u16::MAX));

@@ -504,7 +504,7 @@ fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     cover(f, &mut app.images, Some(np.cover.as_str()), img);
-    let lines = vec![Line::from(np.name.as_str()).fg(TEXT).bold(), Line::from(np.artists.as_str()).fg(GRAY)];
+    let lines = vec![Line::from(np.name.as_str()).fg(TEXT).bold(), Line::from(np.artist_line()).fg(GRAY)];
     f.render_widget(Paragraph::new(lines), info);
     f.render_widget(Paragraph::new("Next in queue").fg(TEXT).bold(), title);
     let rows = (list.height / 2).max(1) as usize;
@@ -543,7 +543,7 @@ fn draw_bar(f: &mut Frame, app: &mut App, area: Rect) {
         cover(f, &mut app.images, Some(np.cover.as_str()), img);
         let name = Line::from(np.name.as_str()).fg(TEXT).bold();
         let like_x = text.x + (name.width() as u16 + 1).min(text.width.saturating_sub(1));
-        let lines = vec![name, Line::from(np.artists.as_str()).fg(GRAY)];
+        let lines = vec![name, Line::from(np.artist_line()).fg(GRAY)];
         f.render_widget(Paragraph::new(lines), Rect { y: text.y + 1, height: 2, width: text.width.saturating_sub(2), ..text });
         let liked = app.liked(&np.uri);
         heart(f, &mut app.hits, Rect { x: like_x, y: text.y + 1, width: 1, height: 1 }, &np.uri, liked, true);

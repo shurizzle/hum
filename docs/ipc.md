@@ -47,7 +47,7 @@ Commands on a connection are handled in order, and the daemon closes it on EOF. 
 | `Error(String)` | Failure of the command this connection sent |
 | `Log(String)` | A daemon/player/librespot warning or error, pushed to every client (TUI status bar) |
 
-`NowPlaying`: `uri`, `name`, `artists`, `album`, `cover` (url, ~300 px), `context` (playlist/
+`NowPlaying`: `uri`, `name`, `artists` (list of names; displays join them with ", "), `album`, `cover` (url, ~300 px), `context` (playlist/
 album/artist uri the track plays from, empty for loose tracks), `duration_ms`,
 `position_ms` (at the time of the event; clients extrapolate from `position_at_ms` while `playing`, never from when the `State` arrived: updates that change only the queue or options resend an old `position_ms`), `position_at_ms`
 (unix ms when `position_ms` was measured), `playing`, `volume`, `muted` (`volume` is then the level to restore),

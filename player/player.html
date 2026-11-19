@@ -41,7 +41,7 @@ async function report(s) {
   const st = {
     uri: t.uri || '',
     name: t.name || '',
-    artists: (t.artists || []).map((a) => a.name).join(', '),
+    artists: (t.artists || []).map((a) => a.name),
     album: t.album?.name || '',
     cover: cover(t.album?.images),
     context: s.context?.uri || '',

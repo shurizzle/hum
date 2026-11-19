@@ -191,7 +191,7 @@ impl Player {
         }
         put("mpris:length", us(np.duration_ms as u64).into());
         put("xesam:title", np.name.as_str().into());
-        put("xesam:artist", vec![np.artists.as_str()].into());
+        put("xesam:artist", np.artists.clone().into());
         put("xesam:album", np.album.as_str().into());
         if !np.cover.is_empty() {
             put("mpris:artUrl", np.cover.as_str().into());

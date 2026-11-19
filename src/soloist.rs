@@ -446,10 +446,13 @@ fn fill_missing(state: &Arc<watch::Sender<NowPlaying>>, session: &Session, filli
 /// Fills `np`'s empty track fields from `from` (same uri); true if anything changed.
 fn merge(np: &mut NowPlaying, from: &NowPlaying) -> bool {
     let before = np.clone();
-    for (dst, src) in [(&mut np.name, &from.name), (&mut np.artists, &from.artists), (&mut np.album, &from.album), (&mut np.cover, &from.cover)] {
+    for (dst, src) in [(&mut np.name, &from.name), (&mut np.album, &from.album), (&mut np.cover, &from.cover)] {
         if dst.is_empty() {
             dst.clone_from(src);
         }
+    }
+    if np.artists.is_empty() {
+        np.artists.clone_from(&from.artists);
     }
     if np.duration_ms == 0 {
         np.duration_ms = from.duration_ms;
@@ -479,7 +482,7 @@ fn playback_value(ev: &Value) -> Option<Value> {
     Some(json!({
         "uri": uri,
         "name": name,
-        "artists": artists.join(", "),
+        "artists": artists,
         "album": album,
         "cover": cover,
         "context": ev["context"]["uri"].as_str().unwrap_or_default(),

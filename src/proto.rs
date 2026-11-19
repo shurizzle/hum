@@ -92,7 +92,7 @@ pub struct Device {
 pub struct NowPlaying {
     pub uri: String,
     pub name: String,
-    pub artists: String,
+    pub artists: Vec<String>,
     pub album: String,
     pub cover: String,
     /// Playlist/album/artist the track plays from; empty for loose tracks.
@@ -123,6 +123,11 @@ impl NowPlaying {
     pub fn position(&self, now_ms: u64) -> u64 {
         let elapsed = if self.playing { now_ms.saturating_sub(self.position_at_ms) } else { 0 };
         (self.position_ms as u64 + elapsed).min(self.duration_ms as u64)
+    }
+
+    /// Artist names joined for display.
+    pub fn artist_line(&self) -> String {
+        self.artists.join(", ")
     }
 }
 

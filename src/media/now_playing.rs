@@ -96,7 +96,7 @@ fn publish(np: &NowPlaying, image: Option<&[u8]>) {
     let secs = |ms: u64| NSNumber::new_f64(ms as f64 / 1000.0);
     unsafe {
         put(MPMediaItemPropertyTitle, &NSString::from_str(&np.name));
-        put(MPMediaItemPropertyArtist, &NSString::from_str(&np.artists));
+        put(MPMediaItemPropertyArtist, &NSString::from_str(&np.artist_line()));
         put(MPMediaItemPropertyAlbumTitle, &NSString::from_str(&np.album));
         put(MPMediaItemPropertyPlaybackDuration, &secs(np.duration_ms as u64));
         put(MPNowPlayingInfoPropertyElapsedPlaybackTime, &secs(np.position(proto::now_ms())));
