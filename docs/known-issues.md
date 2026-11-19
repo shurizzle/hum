@@ -45,8 +45,3 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
 - Linux: the `hum` binary is fully static (musl), but Electron is a glibc build needing system
   libraries (`libnss3`, `libasound2`, `libgbm`, ...): no playback on musl distros (Alpine), and
   minimal installs need those packages.
-
-## Other
-
-- Paging stops when a chunk returns fewer than 90% of `limit` tracks; playlists with many
-  duplicates may stop early.

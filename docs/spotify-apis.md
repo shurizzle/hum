@@ -30,7 +30,7 @@ the official app. All of this is undocumented and can break without notice.
 | `home` | Home shelves | Requires `homeEndUserIntegration: "INTEGRATION_WEB_PLAYER"` |
 | `searchDesktop` | Search | Hash lives in the `xpui-routes-search` chunk. Sections read by key from `data.searchV2` (`topResultsV2.itemsV2`, `tracksV2`, `artists`, `albumsV2`, `playlists`, `podcasts`, `episodes`), each through `api::items` |
 | `libraryV3` | Your Library | |
-| `fetchPlaylist`, `getAlbum`, `fetchLibraryTracks` | Pages, paged by `offset`/`limit` | |
+| `fetchPlaylist`, `getAlbum`, `fetchLibraryTracks` | Pages, paged by `offset`/`limit` | More pages while `offset + page length < totalCount` of the paged list (`api::paged`: the object with `items` and `totalCount` holding the longest page, e.g. `playlistV2.content`, `albumUnion.tracksV2`, `me.library.tracks`) |
 | `queryArtistOverview` | Artist page | Not paged |
 | `areEntitiesInLibrary` | Liked state (`Api::saved`) | `{uris}` → `data.lookup[i].data.saved`, same order. Not for playlists |
 | `addToLibrary`, `removeFromLibrary` | Heart (`Api::set_saved`) | `{libraryItemUris: [uri], interactionId: null}`; tracks, albums, artists, shows, episodes (the web player's `pa` check). Mutations, hash in the main bundle. GraphQL errors arrive with status 200 (`api::errors`) |

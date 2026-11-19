@@ -243,10 +243,11 @@ impl Api {
             }
             _ => return Ok((vec![], false, None)),
         };
-        let items = items(&v, uri);
-        // Duplicates are merged, so a full page can count slightly fewer tracks than `limit`.
-        let tracks = items.iter().filter(|i| i.kind() == "track" || i.kind() == "episode").count();
-        Ok((items, tracks * 10 >= limit * 9, root(&v, uri)))
+        let more = match paged(&v) {
+            Some((len, total)) => len > 0 && offset + len < total,
+            None => false,
+        };
+        Ok((items(&v, uri), more, root(&v, uri)))
     }
 
     /// `query` through the disk cache: a fresh entry answers without a request; when the request
@@ -432,6 +433,21 @@ pub fn items(v: &Value, skip: &str) -> Vec<Item> {
     out
 }
 
+/// The paged list of a response: the object with an `items` array and a `totalCount`, as
+/// (page length, total). Several match (e.g. a playlist's `content` and `members`): the longest page
+/// wins, then the larger total. Does not descend into `items`.
+fn paged(v: &Value) -> Option<(usize, usize)> {
+    match v {
+        Value::Object(o) => {
+            let own = o.get("items").and_then(Value::as_array).zip(o.get("totalCount").and_then(Value::as_u64));
+            let own = own.map(|(items, total)| (items.len(), total as usize));
+            o.iter().filter(|(k, _)| *k != "items").filter_map(|(_, x)| paged(x)).chain(own).max()
+        }
+        Value::Array(a) => a.iter().filter_map(paged).max(),
+        _ => None,
+    }
+}
+
 fn root(v: &Value, uri: &str) -> Option<Item> {
     items(v, "").into_iter().find(|i| i.uri == uri)
 }
@@ -560,6 +576,21 @@ mod tests {
         let (h, complete) = api.scrape_hashes(&[]).await.unwrap();
         let missing: Vec<_> = OPS.iter().filter(|op| !h.ops.contains_key(**op)).collect();
         assert!(missing.is_empty(), "missing {missing:?} (complete: {complete})");
+    }
+
+    #[test]
+    fn paged_picks_the_track_list() {
+        // Shapes as returned by fetchPlaylist and getAlbum (measured 2026-11-19).
+        let playlist = json!({"data": {"playlistV2": {
+            "content": {"items": [{"itemV2": {"data": {"artists": {"items": [{}, {}, {}]}}}}, {}], "totalCount": 50},
+            "members": {"items": [{}], "totalCount": 1}}}});
+        assert_eq!(paged(&playlist), Some((2, 50)));
+        let album = json!({"data": {"albumUnion": {
+            "artists": {"items": [{}], "totalCount": 1},
+            "tracksV2": {"items": [{}, {}, {}, {}, {}], "totalCount": 18},
+            "discs": {"items": [{"tracks": {"totalCount": 18}}], "totalCount": 1}}}});
+        assert_eq!(paged(&album), Some((5, 18)));
+        assert_eq!(paged(&json!({"data": null})), None);
     }
 
     #[test]
