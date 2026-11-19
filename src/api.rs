@@ -89,8 +89,35 @@ pub const HASHES_KEY: &str = "pathfinder-hashes";
 struct Hashes {
     /// Operation name → persisted query hash.
     ops: HashMap<String, String>,
-    /// Route chunks holding an operation, by name (stable across releases, unlike the file hash).
+    /// Chunks holding an operation, by name (stable across releases, unlike the file hash).
     chunks: Vec<String>,
+    /// Operations absent from every chunk → unix time of that scrape, so a lookup does not
+    /// download the whole bundle again before `MISSING_TTL`.
+    missing: HashMap<String, u64>,
+}
+
+/// How long an operation absent from the whole bundle is not looked up again.
+const MISSING_TTL: u64 = 24 * 3600;
+
+impl Hashes {
+    fn recently_missing(&self, op: &str, now: u64) -> bool {
+        self.missing.get(op).is_some_and(|t| now.saturating_sub(*t) < MISSING_TTL)
+    }
+
+    /// Merges a scrape; `complete` when every chunk was read, so operations still absent are
+    /// really missing rather than in a chunk that failed to download.
+    fn merge(&mut self, fresh: Hashes, complete: bool, now: u64) {
+        for op in fresh.ops.keys() {
+            self.missing.remove(op);
+        }
+        self.ops.extend(fresh.ops);
+        self.chunks = fresh.chunks;
+        if complete {
+            for op in OPS.iter().filter(|op| !self.ops.contains_key(**op)) {
+                self.missing.insert(op.to_string(), now);
+            }
+        }
+    }
 }
 
 impl Api {
@@ -272,6 +299,7 @@ impl Api {
     }
 
     async fn hash(&self, op: &str) -> Result<String> {
+        let now = crate::auth::now();
         let known = {
             let mut hashes = self.hashes.write().unwrap();
             let h = hashes.get_or_insert_with(|| {
@@ -280,20 +308,22 @@ impl Api {
             if let Some(hash) = h.ops.get(op) {
                 return Ok(hash.clone());
             }
+            if h.recently_missing(op, now) {
+                bail!("no persisted query hash for {op} (missing from the web player)");
+            }
             h.chunks.clone()
         };
-        let fresh = self.scrape_hashes(&known).await?;
+        let (fresh, complete) = self.scrape_hashes(&known).await?;
         let mut hashes = self.hashes.write().unwrap();
         let h = hashes.get_or_insert_default();
-        h.ops.extend(fresh.ops);
-        h.chunks = fresh.chunks;
+        h.merge(fresh, complete, now);
         save(h);
         h.ops.get(op).cloned().with_context(|| format!("no persisted query hash for {op}"))
     }
 
-    /// Reads persisted query hashes from the web player bundle and its route chunks: first the
-    /// `known` chunks, every route chunk only when an operation is still missing.
-    async fn scrape_hashes(&self, known: &[String]) -> Result<Hashes> {
+    /// Reads persisted query hashes from the web player bundle and its chunks (see `passes`), each
+    /// pass only while an operation is still missing. True when every chunk fetched was read.
+    async fn scrape_hashes(&self, known: &[String]) -> Result<(Hashes, bool)> {
         let html = self.http.get(WEB_PLAYER).send().await?.text().await?;
         let main = Regex::new(r#"https://open\.spotifycdn\.com/cdn/build/web-player/web-player\.[0-9a-f]+\.js"#)?
             .find(&html)
@@ -301,34 +331,47 @@ impl Api {
             .as_str()
             .to_string();
         let main_js = self.http.get(&main).send().await?.text().await?;
-        let chunk_map = Regex::new(r#"\(\{([^}]*)\}\)\[e\]\|\|e\)\+"\."\+\(\{([^}]*)\}\)\[e\]\+"\.js""#)?;
-        let pair = Regex::new(r#"(\d+):"([^"]+)""#)?;
-        let mut routes = vec![];
-        if let Some(c) = chunk_map.captures(&main_js) {
-            let names: HashMap<_, _> = pair.captures_iter(&c[1]).map(|p| (p[1].to_string(), p[2].to_string())).collect();
-            for p in pair.captures_iter(&c[2]) {
-                // shortcut: only route chunks are scanned, widen if an op is missing.
-                if let Some(name) = names.get(&p[1]).filter(|n| n.contains("routes")) {
-                    routes.push((name.clone(), format!("{CDN}{name}.{}.js", &p[2])));
-                }
-            }
-        }
         let mut out = Hashes::default();
         extract(&main_js, &mut out.ops);
-        let (first, rest): (Vec<_>, Vec<_>) = routes.into_iter().partition(|(name, _)| known.contains(name));
-        for pass in [first, rest] {
+        let mut complete = true;
+        for pass in passes(chunk_urls(&main_js), known) {
             if OPS.iter().all(|op| out.ops.contains_key(*op)) {
                 break;
             }
             let chunks = join_all(pass.iter().map(|(_, u)| async move { self.http.get(u).send().await?.text().await })).await;
             for ((name, _), js) in pass.iter().zip(&chunks) {
+                complete &= js.is_ok();
                 if js.as_deref().is_ok_and(|js| extract(js, &mut out.ops)) {
                     out.chunks.push(name.clone());
                 }
             }
         }
-        Ok(out)
+        Ok((out, complete))
     }
+}
+
+/// Chunks of the bundle's webpack chunk map as (name, url); unnamed chunks are named by id.
+fn chunk_urls(main_js: &str) -> Vec<(String, String)> {
+    static MAP: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r#"\(\{([^}]*)\}\)\[e\]\|\|e\)\+"\."\+\(\{([^}]*)\}\)\[e\]\+"\.js""#).unwrap()
+    });
+    static PAIR: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r#"(\d+):"([^"]+)""#).unwrap());
+    let Some(c) = MAP.captures(main_js) else { return vec![] };
+    let names: HashMap<_, _> = PAIR.captures_iter(&c[1]).map(|p| (p[1].to_string(), p[2].to_string())).collect();
+    PAIR.captures_iter(&c[2])
+        .map(|p| {
+            let name = names.get(&p[1]).cloned().unwrap_or_else(|| p[1].to_string());
+            let url = format!("{CDN}{name}.{}.js", &p[2]);
+            (name, url)
+        })
+        .collect()
+}
+
+/// Lookup order: chunks that held an operation last time (`known`), route chunks, the rest.
+fn passes(chunks: Vec<(String, String)>, known: &[String]) -> [Vec<(String, String)>; 3] {
+    let (first, rest): (Vec<_>, Vec<_>) = chunks.into_iter().partition(|(name, _)| known.contains(name));
+    let (routes, others) = rest.into_iter().partition(|(name, _)| name.contains("routes"));
+    [first, routes, others]
 }
 
 /// Adds the hashes of `OPS` found in `js`; true when any was found.
@@ -478,6 +521,45 @@ fn stale_hash(status: reqwest::StatusCode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chunks_are_scanned_known_then_routes_then_rest() {
+        let js = r#"({1:"xpui-routes-search",2:"vendor",3:"xpui-routes-album"})[e]||e)+"."+({1:"a1",2:"b2",3:"c3",4:"d4"})[e]+".js""#;
+        let chunks = chunk_urls(js);
+        assert_eq!(chunks[0], ("xpui-routes-search".into(), format!("{CDN}xpui-routes-search.a1.js")));
+        assert_eq!(chunks[3].0, "4");
+        let names = |v: &Vec<(String, String)>| v.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+        let [first, routes, others] = passes(chunks, &["xpui-routes-album".into()]);
+        assert_eq!(names(&first), ["xpui-routes-album"]);
+        assert_eq!(names(&routes), ["xpui-routes-search"]);
+        assert_eq!(names(&others), ["vendor", "4"]);
+    }
+
+    #[test]
+    fn missing_ops_wait_before_a_new_scrape() {
+        let mut h = Hashes::default();
+        let found = |op: &str| Hashes { ops: HashMap::from([(op.to_string(), "x".into())]), ..Default::default() };
+        // An incomplete scrape (a chunk failed) never marks anything missing.
+        h.merge(found("home"), false, 100);
+        assert!(h.missing.is_empty());
+        h.merge(found("home"), true, 100);
+        assert!(h.recently_missing("getAlbum", 100 + MISSING_TTL - 1));
+        assert!(!h.recently_missing("getAlbum", 100 + MISSING_TTL));
+        assert!(!h.recently_missing("home", 100));
+        h.merge(found("getAlbum"), true, 200);
+        assert!(!h.recently_missing("getAlbum", 200));
+    }
+
+    /// Live check against open.spotify.com: `cargo test -- --ignored scrape`.
+    #[tokio::test]
+    #[ignore]
+    async fn scrape_finds_every_op() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let api = Api::new(Tokens { access_token: String::new(), client_token: String::new(), web_token: String::new() });
+        let (h, complete) = api.scrape_hashes(&[]).await.unwrap();
+        let missing: Vec<_> = OPS.iter().filter(|op| !h.ops.contains_key(**op)).collect();
+        assert!(missing.is_empty(), "missing {missing:?} (complete: {complete})");
+    }
 
     #[test]
     fn only_client_errors_drop_the_hash() {

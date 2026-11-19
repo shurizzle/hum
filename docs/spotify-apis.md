@@ -43,10 +43,13 @@ web player bundle (search for the operation's variables object in the JS).
 - Stored in the disk cache (`pathfinder-hashes`, see [Disk cache](#disk-cache)), loaded on first use.
   On a miss, `Api::scrape_hashes` downloads `https://open.spotify.com/` (desktop user agent required,
   otherwise the mobile player is served) and the `web-player.*.js` bundle, and extracts
-  `"<op>","query","<sha256>"`. Operations still missing are looked up in the `xpui-routes-*` chunks
-  of the bundle's chunk map: first the ones that held an operation last time (stored by name, which
-  survives releases; today only `xpui-routes-search` for `searchDesktop`), then all of them (~46) only
-  if something is still missing.
+  `"<op>","query","<sha256>"`. Operations still missing are looked up in the chunks of the
+  bundle's chunk map, each pass only while something is still missing: first the ones that held an
+  operation last time (stored by name, which survives releases; today only `xpui-routes-search` for
+  `searchDesktop`), then the `xpui-routes-*` chunks (~46), then every other chunk.
+- An operation absent from every chunk (all downloads succeeded) is recorded in `missing` with the
+  scrape time and not looked up again for 24 h (`MISSING_TTL`): lookups fail fast instead of
+  downloading the whole bundle each time. Live check: `cargo test -- --ignored scrape`.
 - On a 4xx response (except 401, 403, 408, 429) the hash for that operation is dropped and
   refetched next time; auth, timeout, rate-limit and 5xx errors keep it (`stale_hash`).
 
