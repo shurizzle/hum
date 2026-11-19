@@ -27,12 +27,23 @@ A Spotify client for the terminal, laid out like the Spotify desktop app, with c
 
 ## Install
 
-- Binaries on each `vX.Y.Z` release: `hum-<target>.tar.gz` for `aarch64-apple-darwin`,
+- Prebuilt binary with [`cargo binstall`](https://github.com/cargo-bins/cargo-binstall):
+
+  ```sh
+  cargo binstall --git https://github.com/shurizzle/hum hum-tui
+  ```
+
+  Or download `hum-<target>.tar.gz` from a `vX.Y.Z` release: `aarch64-apple-darwin`,
   `x86_64-apple-darwin`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` (Linux ones fully
-  static). Also installable with `cargo binstall` (once the crate is on crates.io). Electron is downloaded at first start;
-  on Linux it still needs glibc and its usual libraries. macOS binaries are not notarized: after a
-  browser download run `xattr -d com.apple.quarantine hum`.
-- From source: `cargo install --path .`.
+  static). macOS binaries are not notarized: after a browser download run
+  `xattr -d com.apple.quarantine hum`.
+- From source:
+
+  ```sh
+  cargo install --git https://github.com/shurizzle/hum --locked
+  ```
+
+Electron is downloaded at first start; on Linux it still needs glibc and its usual libraries.
 
 ## Usage
 
