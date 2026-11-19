@@ -88,5 +88,4 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
 - A pathfinder error for any reason drops that operation's cached hash.
 - Paging stops when a chunk returns fewer than 90% of `limit` tracks; playlists with many
   duplicates may stop early.
-- The client's local shuffle/repeat flags are not synced from the daemon.
 - `Liked Songs` (`spotify:collection:tracks`) as a playback context is untested.
