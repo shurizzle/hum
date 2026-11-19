@@ -69,7 +69,9 @@ chosen port from `<config>/soloist/ws.port`, and connects to `ws://127.0.0.1:<po
 - **Commands**: the daemon's `player.command("toggle"|"next"|"prev"|"seek"|"volume", arg)` is
   translated to WebSocket commands (`play`/`pause`, `skip_next`, `skip_prev`, `seek`, `set_volume`).
   Soloist has no mute: `mute true` keeps the current level, sends `set_volume 0` and sets
-  `muted`; while muted, reported volumes are ignored (neither shown nor saved); `mute false`
+  `muted`; while muted, reported volumes are ignored (neither shown nor saved) and a non-zero one
+(Soloist re-applies its level when play from idle activates its Connect device) is answered with
+`set_volume 0` again; `mute false`
   restores the kept level. A restart starts unmuted at the saved level.
   Everything else (`Load`, `Shuffle`, `Repeat`, `Queue`, `Transfer`) goes through the Web API against
   Soloist's Connect device, looked up by name on `GET /me/player/devices` and published to the device

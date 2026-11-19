@@ -4,7 +4,8 @@
 
 Soloist has no mute command (only `set_volume` 0..100), so hum mutes it by setting volume 0 and
 restoring the kept level ([playback.md](playback.md)). Other Connect clients see Soloist at 0 while
-muted. ECS mutes in Chromium and keeps the Spotify volume. Per-process OS mute (PulseAudio/PipeWire
+muted. Soloist re-applies its level when its Connect device activates; hum sets 0 again on that
+report, so a brief audible blip is possible. ECS mutes in Chromium and keeps the Spotify volume. Per-process OS mute (PulseAudio/PipeWire
 sink-input) is not pursued: Linux only and fragile.
 
 ## librespot audio: `error audio key 0 1` (resolved by switching engine)

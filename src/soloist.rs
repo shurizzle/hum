@@ -308,7 +308,12 @@ pub async fn run(
                 let Some(msg) = msg else { bail!("Soloist ws closed") };
                 let WsMessage::Text(txt) = msg? else { continue };
                 let Ok(ev) = serde_json::from_str::<Value>(&txt) else { continue };
-                handle_event(&ev, state, loaded, remote, &mut last_playing, &mut restoring, muted_from.is_some());
+                if handle_event(&ev, state, loaded, remote, &mut last_playing, &mut restoring, muted_from.is_some()) {
+                    // Soloist re-applies its level when its Connect device activates (play from idle).
+                    log::info!("Soloist unmuted itself while muted: volume 0 again");
+                    let ws_cmd = translate(&json!({"cmd": "volume", "arg": 0.0}), last_playing).unwrap();
+                    sink.send(WsMessage::Text(ws_cmd.to_string().into())).await?;
+                }
                 fill_missing(state, session, &mut filling);
             }
             cmd = rx.recv() => {
@@ -344,7 +349,8 @@ pub async fn run(
     }
 }
 
-/// Applies a Soloist WebSocket event to the shared state.
+/// Applies a Soloist WebSocket event to the shared state. Returns whether, while muted, Soloist
+/// reported a non-zero volume, so hum must set 0 again.
 fn handle_event(
     ev: &Value,
     state: &watch::Sender<NowPlaying>,
@@ -354,10 +360,12 @@ fn handle_event(
     restoring: &mut Option<u16>,
     // Muted: the reported volume is the 0 hum set, not the level to show and save.
     muted: bool,
-) {
-    match ev["type"].as_str().unwrap_or_default() {
+) -> bool {
+    let kind = ev["type"].as_str().unwrap_or_default();
+    let loud = muted && matches!(kind, "playback_state" | "volume_changed") && ev["volume"].as_f64().is_some_and(|v| v > 0.0);
+    match kind {
         "playback_state" => {
-            let Some(mut s) = playback_value(ev) else { return };
+            let Some(mut s) = playback_value(ev) else { return loud };
             if muted && let Some(o) = s.as_object_mut() {
                 o.remove("volume");
             }
@@ -399,6 +407,7 @@ fn handle_event(
         }
         _ => {}
     }
+    loud
 }
 
 /// Soloist reports a restored, not yet played track with partial decorations (no artist names,
@@ -753,5 +762,18 @@ mod tests {
         assert_eq!(translate(&json!({"cmd": "toggle"}), false).unwrap()["command"], "play");
         assert_eq!(translate(&json!({"cmd": "seek", "arg": 1500}), false).unwrap()["position_ms"], 1500);
         assert_eq!(translate(&json!({"cmd": "volume", "arg": 0.5}), false).unwrap()["volume"], 50);
+    }
+
+    #[test]
+    fn muted_volume_reports_ask_for_zero() {
+        let state = watch::Sender::new(NowPlaying { volume: 1000, ..Default::default() });
+        let (loaded, remote) = (AtomicBool::new(false), AtomicBool::new(false));
+        let (mut playing, mut restoring) = (false, None);
+        let ev = |v: f64| json!({"type": "volume_changed", "volume": v});
+        assert!(handle_event(&ev(40.0), &state, &loaded, &remote, &mut playing, &mut restoring, true));
+        assert_eq!(state.borrow().volume, 1000);
+        assert!(!handle_event(&ev(0.0), &state, &loaded, &remote, &mut playing, &mut restoring, true));
+        restoring = Some(0); // no cache write
+        assert!(!handle_event(&ev(40.0), &state, &loaded, &remote, &mut playing, &mut restoring, false));
     }
 }
