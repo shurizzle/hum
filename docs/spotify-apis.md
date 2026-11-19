@@ -44,7 +44,8 @@ web player bundle (search for the operation's variables object in the JS).
   (desktop user agent required, otherwise the mobile player is served), the `web-player.*.js` bundle
   and every `xpui-routes-*` chunk listed in its chunk map, and extracts
   `"<op>","query","<sha256>"`.
-- On any non-2xx response the hash for that operation is dropped and refetched next time.
+- On a 4xx response (except 401, 403, 408, 429) the hash for that operation is dropped and
+  refetched next time; auth, timeout, rate-limit and 5xx errors keep it (`stale_hash`).
 
 ### Response parsing
 

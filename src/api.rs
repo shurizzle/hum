@@ -250,7 +250,9 @@ impl Api {
         let body = res.text().await?;
         if !status.is_success() {
             // A rotated hash surfaces as an error: drop it so the next call refetches.
-            self.hashes.write().unwrap().remove(op);
+            if stale_hash(status) {
+                self.hashes.write().unwrap().remove(op);
+            }
             bail!("{op}: {status} {}", body.chars().take(200).collect::<String>());
         }
         Ok(serde_json::from_str(&body)?)
@@ -423,9 +425,27 @@ fn names(v: &Value) -> String {
         .join(", ")
 }
 
+/// Whether an error status may mean a rotated hash. Auth, timeout, rate limit and server errors keep
+/// the hash: rescraping the bundle for them is ~46 downloads for nothing.
+fn stale_hash(status: reqwest::StatusCode) -> bool {
+    use reqwest::StatusCode as S;
+    status.is_client_error() && ![S::UNAUTHORIZED, S::FORBIDDEN, S::REQUEST_TIMEOUT, S::TOO_MANY_REQUESTS].contains(&status)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_client_errors_drop_the_hash() {
+        let st = |c| reqwest::StatusCode::from_u16(c).unwrap();
+        for c in [400, 404, 412] {
+            assert!(stale_hash(st(c)), "{c}");
+        }
+        for c in [401, 403, 408, 429, 500, 503] {
+            assert!(!stale_hash(st(c)), "{c}");
+        }
+    }
 
     #[test]
     fn artist_list_context_opens_artist() {

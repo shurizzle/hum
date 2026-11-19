@@ -85,7 +85,8 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
   directory to shrink it.
 - pathfinder hashes rotate with web player releases; the first call after a rotation rescrapes the
   bundle (~46 chunk downloads).
-- A pathfinder error for any reason drops that operation's cached hash.
+- A pathfinder 4xx (except auth, timeout, rate limit) drops that operation's cached hash: a
+  missing variable (400) also triggers a rescrape.
 - Paging stops when a chunk returns fewer than 90% of `limit` tracks; playlists with many
   duplicates may stop early.
 - `Liked Songs` (`spotify:collection:tracks`) as a playback context is untested.
