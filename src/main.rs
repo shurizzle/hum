@@ -55,6 +55,8 @@ fn main() -> Result<()> {
                     1
                 }
             };
+            // `exit` skips drops: shutting the runtime down drops the tasks, so `kill_on_drop` reaps the player child.
+            rt.shutdown_timeout(std::time::Duration::from_secs(2));
             std::process::exit(code);
         });
         media::main_loop();
