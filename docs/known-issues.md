@@ -54,9 +54,8 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
   minimal installs need those packages.
 - Linux without X/Wayland: `--ozone-platform=headless` with Widevine is untested.
 - ECS is installed and VMP-signed by hand; every ECS update needs re-signing on macOS.
-- Autoplay at the end of a context depends on Spotify's handling of SDK devices (untested). Loose
-  tracks get no autoplay on the SDK device, so they play inside their Song Radio playlist instead:
-  the context shown is that playlist, not the track.
+- Loose tracks get no autoplay on the SDK device, so they play inside their Song Radio playlist
+  instead: the context shown is that playlist, not the track.
 - librespot warns "failure during data parsing for hm://collection/…/json" after every like (any
   device): that copy of the push is JSON where it expects base64. Harmless, the plain push arrives
   too; logged but kept out of the status bar.
