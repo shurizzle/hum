@@ -484,12 +484,18 @@ impl Mirror {
             self.loaded.store(false, Ordering::SeqCst);
         }
         // An idle hum with its last state wins over an empty cluster; only the queue and options
-        // come from the cluster then (Soloist restores the track itself, without them).
+        // come from the cluster then (Soloist restores the track itself, without them), and the
+        // position while paused: Soloist reports a restored track at 0 but resumes it from here.
         if p.track.uri.is_empty() || (!remote && !self.state.borrow().uri.is_empty() && self.loaded.load(Ordering::SeqCst)) {
             if !remote && self.state.borrow().uri == p.track.uri {
+                let position = p.position_as_of_timestamp.clamp(0, p.duration.max(0)) as u32;
                 self.state.send_if_modified(|s| {
-                    let changed = (&s.next, s.shuffle, s.repeat) != (&next, shuffle, repeat);
+                    let mut changed = (&s.next, s.shuffle, s.repeat) != (&next, shuffle, repeat);
                     (s.next, s.shuffle, s.repeat) = (next, shuffle, repeat);
+                    if !s.playing && s.position_ms != position {
+                        (s.position_ms, s.position_at_ms) = (position, proto::now_ms());
+                        changed = true;
+                    }
                     changed
                 });
             }

@@ -62,8 +62,10 @@ chosen port from `<config>/soloist/ws.port`, and connects to `ws://127.0.0.1:<po
   percents, so the expected value is the saved one rounded to a percent (otherwise saving never
   resumes and every restart falls back to a stale value). The track Soloist restores at startup comes with partial decorations (no artist names, `duration_ms: 0`) until it
   plays: empty fields keep the state's values for the same uri, and the rest is fetched once via
-  `meta::tracks` (`soloist::fill_missing`). Its queue, shuffle and repeat are not reported: while
-  hum is idle on that same track they come from the connect-state cluster (`Mirror::apply`).
+  `meta::tracks` (`soloist::fill_missing`). Its queue, shuffle and repeat are not reported, and its
+  position is reported as 0 although play resumes where the account left off: while hum is idle
+  on that same track they come from the connect-state cluster (`Mirror::apply`; the position only
+  while paused).
 - **Commands**: the daemon's `player.command("toggle"|"next"|"prev"|"seek"|"volume", arg)` is
   translated to WebSocket commands (`play`/`pause`, `skip_next`, `skip_prev`, `seek`, `set_volume`).
   Soloist has no mute: `mute true` keeps the current level, sends `set_volume 0` and sets
