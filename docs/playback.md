@@ -77,8 +77,9 @@ chosen port from `<config>/soloist/ws.port`, and connects to `ws://127.0.0.1:<po
 `set_volume 0` again; `mute false`
   restores the kept level. A restart starts unmuted at the saved level.
   Everything else (`Load`, `Shuffle`, `Repeat`, `Queue`, `Transfer`) goes through the Web API against
-  Soloist's Connect device, looked up by name on `GET /me/player/devices` and published to the device
-  watch. The `player::Mirror` still mirrors playback on other devices, as for ECS.
+  Soloist's Connect device, published to the device watch once `GET /me/player/devices` lists it. Its
+  id is read from `<data dir>/.device_id` (written by Soloist; equal to the zeroconf `getInfo`
+  `deviceID` and the Web API id); without that file the device is matched by name (`hum`). The `player::Mirror` still mirrors playback on other devices, as for ECS.
 - Exit `10` (expired build) and any other exit surface an error; `supervise` retries after 3 s.
 
 ### OS media controls (`src/media/`)

@@ -1,13 +1,5 @@
 # Known issues
 
-## Soloist mute is volume 0
-
-Soloist has no mute command (only `set_volume` 0..100), so hum mutes it by setting volume 0 and
-restoring the kept level ([playback.md](playback.md)). Other Connect clients see Soloist at 0 while
-muted. Soloist re-applies its level when its Connect device activates; hum sets 0 again on that
-report, so a brief audible blip is possible. ECS mutes in Chromium and keeps the Spotify volume. Per-process OS mute (PulseAudio/PipeWire
-sink-input) is not pursued: Linux only and fragile.
-
 ## librespot audio: `error audio key 0 1` (resolved by switching engine)
 
 Resolved 2026-11-16 by playing through the Web Playback SDK in castLabs Electron
@@ -67,12 +59,8 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
 - MPRIS / macOS Now Playing with Soloist are published by the daemon itself (`src/media/`), not by
   the engine. MPRIS `xesam:artist` holds the joined artist names as one entry (`NowPlaying` keeps
   them joined).
-- The Soloist binary is user-installed and closed-source; Spotify forbids redistributing it, so hum
-  never downloads it. Builds expire 90 days after their build date (exit `10`): the daemon surfaces an
-  error and the user must download a fresh build.
-- Soloist's Web API device is matched **by name** (`hum`) on `/me/player/devices`:
-  `shortcut: breaks if another Connect device is also named hum; switch to the connect-state device id
-  if Soloist ever exposes it`.
+- Soloist's Web API device id comes from its undocumented `<data dir>/.device_id` file; if a build
+  stops writing it, hum falls back to matching the name `hum` (wrong if another device shares it).
 - Pairing uses an internal `/api/token` token-exchange and Soloist's zeroconf `addUser`, both
   undocumented; a Spotify change could break pairing. The one-time pairing is redone (delete
   `soloist-key`) if it stops working.

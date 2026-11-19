@@ -285,9 +285,10 @@ pub async fn run(
     // Soloist's Web API device id, for the daemon's device-targeted calls.
     {
         let device = device.clone();
+        let dir = dir.clone();
         tokio::spawn(async move {
             for _ in 0..30 {
-                if let Ok(Some(id)) = lookup_device().await {
+                if let Ok(Some(id)) = lookup_device(&dir).await {
                     device.send_replace(Some(id));
                     return;
                 }
@@ -502,15 +503,20 @@ fn translate(cmd: &Value, last_playing: bool) -> Option<Value> {
     }
 }
 
-/// Soloist's device id on the Web API, matched by name.
-async fn lookup_device() -> Result<Option<String>> {
+/// Soloist's device id once it is visible on the Web API. Soloist writes its Connect device id
+/// (same as the Web API one) to `<dir>/.device_id`; without that file it is matched by name.
+async fn lookup_device(dir: &Path) -> Result<Option<String>> {
+    let own = std::fs::read_to_string(dir.join(".device_id")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let token = auth::web_token().await?;
     let v: Value = reqwest::Client::new().get("https://api.spotify.com/v1/me/player/devices").bearer_auth(token).send().await?.error_for_status()?.json().await?;
     Ok(v["devices"]
         .as_array()
         .into_iter()
         .flatten()
-        .find(|d| d["name"].as_str() == Some(DEVICE_NAME))
+        .find(|d| match &own {
+            Some(id) => d["id"].as_str() == Some(id),
+            None => d["name"].as_str() == Some(DEVICE_NAME),
+        })
         .and_then(|d| d["id"].as_str())
         .map(str::to_string))
 }
