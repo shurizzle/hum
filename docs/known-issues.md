@@ -45,3 +45,14 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
 - Linux: the `hum` binary is fully static (musl), but Electron is a glibc build needing system
   libraries (`libnss3`, `libasound2`, `libgbm`, ...): no playback on musl distros (Alpine), and
   minimal installs need those packages.
+  - gcompat tried 2026-11-19 (Alpine 3.22, gcompat 1.1.0): Electron fails with
+    `Error relocating /ecs/electron: posix_fallocate64: symbol not found`. With a one-line shim
+    (`posix_fallocate64` → `posix_fallocate`) linked via `patchelf --add-needed` (`LD_PRELOAD` is
+    lost by child processes), Electron starts and Widevine `createMediaKeys` succeeds; real playback
+    was not tested. No shim is needed for this symbol: `patchelf --rename-dynamic-symbols`
+    (`posix_fallocate64 posix_fallocate`) on `electron`, the only object importing it, works the
+    same (musl binds `posix_fallocate@GLIBC_2.2.5` despite the version). It segfaults on exit because of a gcompat bug, not the shim: gcompat's
+    `newlocale(base=NULL)` `calloc`s the locale (Chromium's PartitionAlloc, which replaces
+    `malloc`), gcompat has no `freelocale`, so p11-kit's cleanup calls musl's `freelocale`, whose
+    internal `__libc_free` aborts on the foreign pointer. A `freelocale` calling the public `free`
+    in the shim fixes it. Not pursued: musl distros are not supported.
