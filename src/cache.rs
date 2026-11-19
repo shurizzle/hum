@@ -25,7 +25,7 @@ pub const PRUNE_ABOVE: u64 = 768 << 20;
 /// ... and deletes the oldest entries until payloads sum to less than this.
 pub const PRUNE_TO: u64 = 512 << 20;
 /// Keys never pruned.
-const KEEP: &[&str] = &["volume"];
+const KEEP: &[&str] = &["volume", crate::api::HASHES_KEY];
 /// The daemon checks at start and then this often.
 pub const PRUNE_EVERY: Duration = Duration::from_secs(15 * 60);
 /// `read_touch` rewrites a hit at most this often, bounding write transactions on reads.

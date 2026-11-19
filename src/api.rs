@@ -9,7 +9,7 @@ use futures_util::future::join_all;
 use regex::Regex;
 use serde_json::{Value, json};
 
-use crate::{auth, cache::Cache, proto::Tokens};
+use crate::{cache::Cache, proto::Tokens};
 
 const PATHFINDER: &str = "https://api-partner.spotify.com/pathfinder/v2/query";
 const WEB_PLAYER: &str = "https://open.spotify.com/";
@@ -77,19 +77,28 @@ pub struct Section {
 pub struct Api {
     http: reqwest::Client,
     pub tokens: Arc<RwLock<Tokens>>,
-    hashes: Arc<RwLock<HashMap<String, String>>>,
+    /// Loaded from the disk cache on first use.
+    hashes: Arc<RwLock<Option<Hashes>>>,
+}
+
+/// Disk cache key of the persisted query hashes.
+pub const HASHES_KEY: &str = "pathfinder-hashes";
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct Hashes {
+    /// Operation name → persisted query hash.
+    ops: HashMap<String, String>,
+    /// Route chunks holding an operation, by name (stable across releases, unlike the file hash).
+    chunks: Vec<String>,
 }
 
 impl Api {
     pub fn new(tokens: Tokens) -> Self {
-        let hashes = std::fs::read(hashes_path())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
         Self {
             http: reqwest::Client::builder().user_agent(UA).build().unwrap(),
             tokens: Arc::new(RwLock::new(tokens)),
-            hashes: Arc::new(RwLock::new(hashes)),
+            hashes: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -251,7 +260,11 @@ impl Api {
         if !status.is_success() {
             // A rotated hash surfaces as an error: drop it so the next call refetches.
             if stale_hash(status) {
-                self.hashes.write().unwrap().remove(op);
+                let mut hashes = self.hashes.write().unwrap();
+                if let Some(h) = hashes.as_mut() {
+                    h.ops.remove(op);
+                    save(h);
+                }
             }
             bail!("{op}: {status} {}", body.chars().take(200).collect::<String>());
         }
@@ -259,18 +272,28 @@ impl Api {
     }
 
     async fn hash(&self, op: &str) -> Result<String> {
-        if let Some(h) = self.hashes.read().unwrap().get(op) {
-            return Ok(h.clone());
-        }
-        let fresh = self.scrape_hashes().await?;
+        let known = {
+            let mut hashes = self.hashes.write().unwrap();
+            let h = hashes.get_or_insert_with(|| {
+                Cache::global().read_any(HASHES_KEY).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+            });
+            if let Some(hash) = h.ops.get(op) {
+                return Ok(hash.clone());
+            }
+            h.chunks.clone()
+        };
+        let fresh = self.scrape_hashes(&known).await?;
         let mut hashes = self.hashes.write().unwrap();
-        hashes.extend(fresh);
-        let _ = std::fs::write(hashes_path(), serde_json::to_vec_pretty(&*hashes)?);
-        hashes.get(op).cloned().with_context(|| format!("no persisted query hash for {op}"))
+        let h = hashes.get_or_insert_default();
+        h.ops.extend(fresh.ops);
+        h.chunks = fresh.chunks;
+        save(h);
+        h.ops.get(op).cloned().with_context(|| format!("no persisted query hash for {op}"))
     }
 
-    /// Reads persisted query hashes from the web player bundle and its route chunks.
-    async fn scrape_hashes(&self) -> Result<HashMap<String, String>> {
+    /// Reads persisted query hashes from the web player bundle and its route chunks: first the
+    /// `known` chunks, every route chunk only when an operation is still missing.
+    async fn scrape_hashes(&self, known: &[String]) -> Result<Hashes> {
         let html = self.http.get(WEB_PLAYER).send().await?.text().await?;
         let main = Regex::new(r#"https://open\.spotifycdn\.com/cdn/build/web-player/web-player\.[0-9a-f]+\.js"#)?
             .find(&html)
@@ -280,28 +303,46 @@ impl Api {
         let main_js = self.http.get(&main).send().await?.text().await?;
         let chunk_map = Regex::new(r#"\(\{([^}]*)\}\)\[e\]\|\|e\)\+"\."\+\(\{([^}]*)\}\)\[e\]\+"\.js""#)?;
         let pair = Regex::new(r#"(\d+):"([^"]+)""#)?;
-        let mut urls = vec![];
+        let mut routes = vec![];
         if let Some(c) = chunk_map.captures(&main_js) {
             let names: HashMap<_, _> = pair.captures_iter(&c[1]).map(|p| (p[1].to_string(), p[2].to_string())).collect();
             for p in pair.captures_iter(&c[2]) {
                 // shortcut: only route chunks are scanned, widen if an op is missing.
                 if let Some(name) = names.get(&p[1]).filter(|n| n.contains("routes")) {
-                    urls.push(format!("{CDN}{name}.{}.js", &p[2]));
+                    routes.push((name.clone(), format!("{CDN}{name}.{}.js", &p[2])));
                 }
             }
         }
-        let chunks = join_all(urls.iter().map(|u| async move { self.http.get(u).send().await?.text().await })).await;
-        let ops = Regex::new(r#""(\w+)","(?:query|mutation)","([0-9a-f]{64})""#)?;
-        let mut out = HashMap::new();
-        for js in std::iter::once(main_js.as_str()).chain(chunks.iter().filter_map(|c| c.as_deref().ok())) {
-            for c in ops.captures_iter(js) {
-                if OPS.contains(&&c[1]) {
-                    out.insert(c[1].to_string(), c[2].to_string());
+        let mut out = Hashes::default();
+        extract(&main_js, &mut out.ops);
+        let (first, rest): (Vec<_>, Vec<_>) = routes.into_iter().partition(|(name, _)| known.contains(name));
+        for pass in [first, rest] {
+            if OPS.iter().all(|op| out.ops.contains_key(*op)) {
+                break;
+            }
+            let chunks = join_all(pass.iter().map(|(_, u)| async move { self.http.get(u).send().await?.text().await })).await;
+            for ((name, _), js) in pass.iter().zip(&chunks) {
+                if js.as_deref().is_ok_and(|js| extract(js, &mut out.ops)) {
+                    out.chunks.push(name.clone());
                 }
             }
         }
         Ok(out)
     }
+}
+
+/// Adds the hashes of `OPS` found in `js`; true when any was found.
+fn extract(js: &str, ops: &mut HashMap<String, String>) -> bool {
+    static RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r#""(\w+)","(?:query|mutation)","([0-9a-f]{64})""#).unwrap());
+    let mut found = false;
+    for c in RE.captures_iter(js) {
+        if OPS.contains(&&c[1]) {
+            ops.insert(c[1].to_string(), c[2].to_string());
+            found = true;
+        }
+    }
+    found
 }
 
 /// GraphQL errors come back with status 200.
@@ -312,8 +353,10 @@ fn errors(v: Value) -> Result<Value> {
     }
 }
 
-fn hashes_path() -> std::path::PathBuf {
-    auth::config_dir().join("hashes.json")
+fn save(hashes: &Hashes) {
+    if let Ok(bytes) = serde_json::to_vec(hashes) {
+        Cache::global().write(HASHES_KEY, &bytes);
+    }
 }
 
 fn timezone() -> String {

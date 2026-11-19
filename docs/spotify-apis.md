@@ -40,10 +40,13 @@ web player bundle (search for the operation's variables object in the JS).
 
 ### Persisted query hashes
 
-- Cached in `hashes.json`. On a miss, `Api::scrape_hashes` downloads `https://open.spotify.com/`
-  (desktop user agent required, otherwise the mobile player is served), the `web-player.*.js` bundle
-  and every `xpui-routes-*` chunk listed in its chunk map, and extracts
-  `"<op>","query","<sha256>"`.
+- Stored in the disk cache (`pathfinder-hashes`, see [Disk cache](#disk-cache)), loaded on first use.
+  On a miss, `Api::scrape_hashes` downloads `https://open.spotify.com/` (desktop user agent required,
+  otherwise the mobile player is served) and the `web-player.*.js` bundle, and extracts
+  `"<op>","query","<sha256>"`. Operations still missing are looked up in the `xpui-routes-*` chunks
+  of the bundle's chunk map: first the ones that held an operation last time (stored by name, which
+  survives releases; today only `xpui-routes-search` for `searchDesktop`), then all of them (~46) only
+  if something is still missing.
 - On a 4xx response (except 401, 403, 408, 429) the hash for that operation is dropped and
   refetched next time; auth, timeout, rate-limit and 5xx errors keep it (`stale_hash`).
 
@@ -69,6 +72,7 @@ else is ignored.
 | Track metadata (`meta::Track` JSON) | `track:<id>` | 30 days | `meta::tracks` (daemon) |
 | Cover bytes | `cover:<url>` | never expires; a hit older than 24 h is rewritten (`Cache::read_touch`) | `tui::images` |
 | Lyrics (`LyricsLine`s JSON, empty = none) | `lyrics:<id>` | 7 days | `meta::lyrics` (daemon) |
+| pathfinder hashes (`api::Hashes` JSON) | `pathfinder-hashes` | never expires; a 4xx drops an operation | `Api::hash` |
 | Player volume (u16 LE) | `volume` | never expires | `player::run_once`: set on `ready`, saved on change once the SDK reported the restored value |
 
 - A fresh entry answers locally, no request. Expired: the request goes out and the response is
@@ -81,7 +85,7 @@ else is ignored.
   environment uses more than 768 MiB (`PRUNE_ABOVE`), it deletes entries by oldest write time (covers: last write or last
   disk hit, within 24 h) until
   keys + values sum to at most 512 MiB (`PRUNE_TO`), in one write transaction. Entries without a
-  valid header go first; `volume` is never pruned. LMDB reuses the freed pages; the file never
+  valid header go first; `volume` and `pathfinder-hashes` are never pruned. LMDB reuses the freed pages; the file never
   shrinks.
 
 ## Web API

@@ -95,7 +95,6 @@ both see the same now-playing state.
 |---|---|
 | `~/Library/Application Support/hum/credentials.json` | Stored librespot credentials |
 | `~/Library/Application Support/hum/web-token.json` | hum developer app token + refresh token |
-| `~/Library/Application Support/hum/hashes.json` | pathfinder persisted query hashes |
 | `~/Library/Application Support/hum/last-page.json` | Last open playlist/album/artist (client resume) |
 | `~/Library/Application Support/hum/ecs/` (Linux: `$XDG_DATA_HOME/hum/ecs/`) | castLabs Electron, installed automatically before the first daemon start (`setup::ensure_ecs`); `VERSION` holds the installed `ECS_VERSION` |
 | `~/Library/Application Support/hum/soloist-key` (Linux: `$XDG_CONFIG_HOME/hum/soloist-key`) | Spotify Soloist developer API key, written after pairing; its presence selects the Soloist engine (`src/soloist.rs`, [docs/playback.md](docs/playback.md)) |
