@@ -1,17 +1,25 @@
-//! Installs the pinned castLabs Electron (the playback engine) before the first daemon start:
-//! the VMP-signed build from this repository's `ecs-<version>` release on macOS, castLabs' own
-//! build on Linux (no signing needed there).
+//! Sets up the playback engine before the first daemon start: pairs Soloist or, with the `ecs`
+//! feature, installs the pinned castLabs Electron (the VMP-signed build from this repository's
+//! `ecs-<version>` release on macOS, castLabs' own build on Linux, no signing needed there).
 
-use std::{io::Write, path::Path, path::PathBuf, process::Command};
+use std::path::PathBuf;
+#[cfg(feature = "ecs")]
+use std::{io::Write, path::Path, process::Command};
 
-use anyhow::{Context, Result, bail};
-use futures_util::StreamExt;
+use anyhow::{Context, Result};
+#[cfg(feature = "ecs")]
+use {
+    crate::{auth, player},
+    anyhow::bail,
+    futures_util::StreamExt,
+};
 
-use crate::{auth, player, soloist};
+use crate::soloist;
 
 /// The playback engine the daemon runs. See docs/playback.md.
 pub enum Engine {
     /// Spotify Web Playback SDK in castLabs Electron (Widevine).
+    #[cfg(feature = "ecs")]
     Ecs,
     /// Spotify Soloist, paired and driven over its WebSocket API.
     Soloist { bin: PathBuf, key: String },
@@ -23,7 +31,11 @@ pub fn engine() -> Option<Engine> {
     if let (Some(key), Some(bin)) = (soloist::key(), soloist::binary()) {
         return Some(Engine::Soloist { bin, key });
     }
-    (std::env::var_os("HUM_ECS").is_some() || player::ecs_binary().exists()).then_some(Engine::Ecs)
+    #[cfg(feature = "ecs")]
+    if std::env::var_os("HUM_ECS").is_some() || player::ecs_binary().exists() {
+        return Some(Engine::Ecs);
+    }
+    None
 }
 
 /// Picks and, when nothing is set up yet, installs the playback engine (foreground, before the
@@ -32,6 +44,7 @@ pub async fn ensure_engine() -> Result<Engine> {
     if let (Some(key), Some(bin)) = (soloist::key(), soloist::binary()) {
         return Ok(Engine::Soloist { bin, key });
     }
+    #[cfg(feature = "ecs")]
     if std::env::var_os("HUM_ECS").is_some() || player::ecs_binary().exists() {
         ensure_ecs().await?;
         return Ok(Engine::Ecs);
@@ -41,10 +54,16 @@ pub async fn ensure_engine() -> Result<Engine> {
         let key = soloist::key().context("Soloist pairing did not store a key")?;
         return Ok(Engine::Soloist { bin, key });
     }
-    ensure_ecs().await?;
-    Ok(Engine::Ecs)
+    #[cfg(feature = "ecs")]
+    {
+        ensure_ecs().await?;
+        Ok(Engine::Ecs)
+    }
+    #[cfg(not(feature = "ecs"))]
+    anyhow::bail!("`soloist` not found on PATH nor in $HUM_SOLOIST (see docs/playback.md); or build hum with the `ecs` feature")
 }
 
+#[cfg(feature = "ecs")]
 /// Ensures `<data dir>/ecs` holds `player::ECS_VERSION`. Skipped with `$HUM_ECS` (dev override) and
 /// for an install without a `VERSION` file (manual or dev install, left alone).
 pub async fn ensure_ecs() -> Result<()> {
@@ -60,6 +79,7 @@ pub async fn ensure_ecs() -> Result<()> {
     install(&dir).await
 }
 
+#[cfg(feature = "ecs")]
 /// Download URL of the Electron build for this OS and CPU.
 fn url(os: &str, arch: &str, version: &str) -> Result<String> {
     Ok(match (os, arch) {
@@ -74,6 +94,7 @@ fn url(os: &str, arch: &str, version: &str) -> Result<String> {
     })
 }
 
+#[cfg(feature = "ecs")]
 async fn install(dir: &Path) -> Result<()> {
     let version = player::ECS_VERSION;
     let url = url(std::env::consts::OS, std::env::consts::ARCH, version)?.replace('+', "%2B");
@@ -124,7 +145,7 @@ async fn install(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ecs"))]
 mod tests {
     use super::*;
 

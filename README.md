@@ -7,21 +7,22 @@ A Spotify client for the terminal, laid out like the Spotify desktop app, with c
 - Shows up as a Spotify Connect device named `hum`.
 - Keyboard and mouse.
 - Media keys and system now-playing: MPRIS on Linux, Control Center on macOS.
-- Audio through Spotify's official Web Playback SDK (Widevine), or optionally Spotify Soloist; no
-  Spotify app needed.
+- Audio through Spotify Soloist, or Spotify's official Web Playback SDK (Widevine) in builds with
+  the default `ecs` feature; no Spotify app needed.
 
 ## Requirements
 
 - Spotify Premium.
 - Rust (edition 2024).
 - A playback engine, one of:
-  - **castLabs Electron** (Widevine), VMP-signed on macOS: downloaded automatically (~120 MB) the
+  - **castLabs Electron** (Widevine), VMP-signed on macOS, only in builds with the default `ecs` feature
+    (of the prebuilt binaries, only `x86_64-apple-darwin` has it): downloaded automatically (~120 MB) the
     first time hum starts its daemon, from the
     [`ecs-v45.2.1+wvcus` release](https://github.com/shurizzle/hum/releases/tag/ecs-v45.2.1%2Bwvcus).
     Details in [docs/playback.md](docs/playback.md#setup).
   - **Spotify Soloist** (lossless, no Widevine): install the `soloist` binary yourself from
     <https://developer.spotify.com/documentation/soloist> and have a Soloist developer API key. If
-    `soloist` is on `PATH` (or `$HUM_SOLOIST`) and Electron is not set up, hum pairs it automatically
+    `soloist` is on `PATH` (or `$HUM_SOLOIST`) and Electron is not set up (or not built in), hum pairs it automatically
     on first run (it asks for the key). See [docs/playback.md](docs/playback.md#soloist-engine-srcsoloistrs).
 - For covers: Kitty, Ghostty, WezTerm or iTerm2. Other terminals fall back to block characters.
 
@@ -41,10 +42,12 @@ A Spotify client for the terminal, laid out like the Spotify desktop app, with c
 - From source:
 
   ```sh
-  cargo install --git https://github.com/shurizzle/hum --locked
+  cargo install --git https://github.com/shurizzle/hum --locked                         # + Electron
+  cargo install --git https://github.com/shurizzle/hum --locked --no-default-features   # Soloist only
   ```
 
-Electron is downloaded at first start; on Linux it still needs glibc and its usual libraries.
+With `ecs`, Electron is downloaded at first start; on Linux it still needs glibc and its usual
+libraries.
 
 ## Usage
 

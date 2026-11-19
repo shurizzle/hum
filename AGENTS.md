@@ -1,8 +1,8 @@
 # AGENTS.md
 
 `hum` (package `hum-tui`): terminal Spotify client in Rust. A daemon owns playback through a
-child process (Spotify Web Playback SDK in castLabs Electron); each TUI client does its own browsing
-via Spotify's internal APIs.
+child process (Spotify Soloist, or with the `ecs` Cargo feature the Web Playback SDK in castLabs
+Electron); each TUI client does its own browsing via Spotify's internal APIs.
 
 ## Documentation — keep it current
 
@@ -51,7 +51,7 @@ aur/hum-bin/       AUR package over the Linux release binaries; mirror of the AU
 cargo build
 cargo build --tests  # first: compiling deps takes minutes; then run `cargo test` under any timeout
 cargo test
-cargo clippy          # keep it warning-free
+cargo clippy          # keep it warning-free, with and without `--no-default-features`
 cargo run             # TUI; spawns the daemon
 ./target/debug/hum kill   # stop the daemon (needed after every rebuild in dev)
 ```

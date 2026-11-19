@@ -41,6 +41,7 @@ pub fn config_dir() -> PathBuf {
 }
 
 /// Installed data (castLabs Electron): `$XDG_DATA_HOME/hum`, `~/Library/Application Support/hum`.
+#[cfg(feature = "ecs")]
 pub fn data_dir() -> PathBuf {
     dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("hum")
 }

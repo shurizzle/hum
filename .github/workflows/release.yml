@@ -1,8 +1,8 @@
 # Builds hum for every `vX.Y.Z` tag and attaches the binaries to that release: macOS and Linux,
 # aarch64 and x86_64. Linux builds are fully static (musl). Archives are named
 # `hum-<target triple>.tar.gz`, the layout cargo-binstall expects (Cargo.toml metadata). A manual run only uploads them as
-# workflow artifacts. Electron, the playback engine, is not included: hum downloads it at first
-# start (signed `ecs-*` releases, see docs/playback.md).
+# workflow artifacts. Only x86_64-apple-darwin is built with the `ecs` feature (castLabs Electron
+# engine); the others are Soloist only (see docs/playback.md).
 name: Release
 
 on:
@@ -24,6 +24,7 @@ jobs:
           - # Cross-compiled on the arm runner; Xcode's clang builds the C parts for x86_64 too.
             runner: macos-latest
             target: x86_64-apple-darwin
+            features: ecs
           - runner: ubuntu-latest
             target: x86_64-unknown-linux-musl
           - runner: ubuntu-24.04-arm
@@ -31,6 +32,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       TARGET: ${{ matrix.target }}
+      FEATURES: ${{ matrix.features }}
     steps:
       - uses: actions/checkout@v7
       - name: Toolchain
@@ -46,7 +48,7 @@ jobs:
             # musl-gcc compiles the C parts (aws-lc, lmdb) against musl too.
             export CC=musl-gcc RUSTFLAGS="-C target-feature=+crt-static"
           fi
-          cargo build --release --locked --target "$TARGET"
+          cargo build --release --locked --target "$TARGET" --no-default-features --features "$FEATURES"
       - name: Package
         run: |
           bin="target/$TARGET/release/hum"

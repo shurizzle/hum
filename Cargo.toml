@@ -42,6 +42,11 @@ tokio-util = { version = "0.7.20", features = ["codec"] }
 # Soloist runtime: loopback ws:// to its WebSocket API (plain TCP handshake, no TLS).
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 
+[features]
+default = ["ecs"]
+# Spotify Web Playback SDK in castLabs Electron as a playback engine (off: Soloist only).
+ecs = []
+
 [[bin]]
 name = "hum"
 path = "src/main.rs"

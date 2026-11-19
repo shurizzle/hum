@@ -1,8 +1,10 @@
 # Playback
 
-Audio comes from one of two **engines**. By default the official **Web Playback SDK** runs inside
-**castLabs Electron for Content Security (ECS)**, which ships Google's Widevine CDM. Optionally hum
-drives **Spotify Soloist** (the official headless Connect player) instead — no Widevine, lossless.
+Audio comes from one of two **engines**. By default hum drives **Spotify Soloist** (the official
+headless Connect player) — no Widevine, lossless. With the `ecs` Cargo feature (on by default;
+`--no-default-features` drops it), the official **Web Playback SDK** can run instead inside **castLabs Electron for Content
+Security (ECS)**, which ships Google's Widevine CDM. Without the feature no ECS code is compiled in
+(`setup::Engine::Ecs`, `player::run_once`, the embedded `player/` files, the installer).
 librespot's own player is not used: Spotify refuses its audio keys on some accounts (see
 [known-issues.md](known-issues.md)).
 
@@ -13,8 +15,9 @@ already set up wins, else an installed Soloist is paired, else ECS is downloaded
 
 1. **Soloist** if `<config>/soloist-key` exists (written only after a successful pairing) **and** the
    `soloist` binary is found (`$HUM_SOLOIST`, else on `PATH`).
-2. else **ECS** if `$HUM_ECS` is set or `<data>/ecs` is installed.
-3. else, with nothing set up: pair an installed Soloist if present, otherwise download ECS.
+2. else (`ecs` feature only) **ECS** if `$HUM_ECS` is set or `<data>/ecs` is installed.
+3. else, with nothing set up: pair an installed Soloist if present, otherwise download ECS (`ecs`
+   feature) or fail with an error pointing here.
 
 `Engine` is passed to `Player::spawn`; `player::supervise` runs `run_once` (ECS) or `soloist::run`
 over the same command/state channels, so the daemon's dispatch (`src/daemon.rs`) is engine-agnostic.

@@ -10,8 +10,9 @@ client (TUI) and the server (daemon).
                          ├── librespot Session: browsing tokens (login5, client token), track
                          │   metadata (extended-metadata)
                          ├── Mirror: own librespot Session, Connect cluster (dealer), set_queue
-                         └── player child: castLabs Electron + Web Playback SDK (Widevine),
-                             Spotify Connect device "hum", driven via SDK + Web API
+                         └── player child: Spotify Soloist (WebSocket API) or, with the `ecs`
+                             feature, castLabs Electron + Web Playback SDK (Widevine);
+                             Spotify Connect device "hum", driven via it + Web API
 ```
 
 ## Responsibilities
@@ -32,8 +33,8 @@ both see the same now-playing state.
   stdout/stderr to `daemon.log`.
 - Reads cached credentials; never runs the OAuth flow (it has no terminal or browser).
 - Connects a librespot session only to mint browsing tokens. Playback runs in a supervised child
-  process (`src/player.rs`): castLabs Electron with Spotify's Web Playback SDK, registered as the
-  Connect device `hum`. See [docs/playback.md](docs/playback.md).
+  process (`src/player.rs`): Spotify Soloist or, with the `ecs` Cargo feature, castLabs Electron
+  with Spotify's Web Playback SDK, registered as the Connect device `hum`. See [docs/playback.md](docs/playback.md).
 - Folds the player's state reports into a `NowPlaying` snapshot in a `watch` channel. Every client
   connection gets the current snapshot, then each change.
 - Follows the account's Connect cluster over the librespot dealer (hidden observer device): restores
@@ -96,7 +97,7 @@ both see the same now-playing state.
 | `~/Library/Application Support/hum/credentials.json` | Stored librespot credentials |
 | `~/Library/Application Support/hum/web-token.json` | hum developer app token + refresh token |
 | `~/Library/Application Support/hum/last-page.json` | Last open playlist/album/artist (client resume) |
-| `~/Library/Application Support/hum/ecs/` (Linux: `$XDG_DATA_HOME/hum/ecs/`) | castLabs Electron, installed automatically before the first daemon start (`setup::ensure_ecs`); `VERSION` holds the installed `ECS_VERSION` |
+| `~/Library/Application Support/hum/ecs/` (Linux: `$XDG_DATA_HOME/hum/ecs/`) | castLabs Electron (`ecs` feature), installed automatically before the first daemon start (`setup::ensure_ecs`); `VERSION` holds the installed `ECS_VERSION` |
 | `~/Library/Application Support/hum/soloist-key` (Linux: `$XDG_CONFIG_HOME/hum/soloist-key`) | Spotify Soloist developer API key, written after pairing; its presence selects the Soloist engine (`src/soloist.rs`, [docs/playback.md](docs/playback.md)) |
 | `~/Library/Application Support/hum/soloist/` (Linux: `$XDG_CONFIG_HOME/hum/soloist/`) | Soloist session and state (`-D`); `ws.port` holds the runtime WebSocket port |
 | `~/Library/Caches/hum/player/` | Engine files written from the binary |

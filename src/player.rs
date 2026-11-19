@@ -1,6 +1,4 @@
 use std::{
-    path::PathBuf,
-    process::Stdio,
     sync::{
         Arc,
         Mutex,
@@ -18,23 +16,30 @@ use librespot_protocol::{
 };
 use protobuf::{EnumOrUnknown, Message as _, MessageField};
 use serde_json::{Value, json};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::Command,
-    sync::{mpsc, watch},
-};
+use tokio::sync::{mpsc, watch};
 
 use crate::{
     auth,
-    cache::Cache,
     proto::{self, NowPlaying},
 };
+#[cfg(feature = "ecs")]
+use {
+    crate::cache::Cache,
+    std::{path::PathBuf, process::Stdio},
+    tokio::{
+        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+        process::Command,
+    },
+};
 
+#[cfg(feature = "ecs")]
 const MAIN_JS: &str = include_str!("../player/main.js");
+#[cfg(feature = "ecs")]
 const PLAYER_HTML: &str = include_str!("../player/player.html");
 const WEB_API: &str = "https://api.spotify.com/v1";
 /// Context of an artist's "Popular" tracks, as the web player plays them; followed by the artist id.
 const ARTIST_POPULAR: &str = "spotify:list:popular-release-segments-main-roles:artist_";
+#[cfg(feature = "ecs")]
 const VOLUME_KEY: &str = "volume";
 /// Keeps `PUT /me/player/play` bodies well under the Web API's size limit.
 const MAX_URIS: usize = 100;
@@ -64,9 +69,11 @@ struct Latest {
 
 /// castLabs Electron version hum is tested with. Signed builds come from this repo's
 /// `ecs-<version>` release (`.github/workflows/ecs.yml`); bump after trying a new one.
+#[cfg(feature = "ecs")]
 pub const ECS_VERSION: &str = "v45.2.1+wvcus";
 
 /// castLabs Electron install: `$HUM_ECS`, else `<data dir>/ecs` (see docs/playback.md).
+#[cfg(feature = "ecs")]
 pub fn ecs_binary() -> PathBuf {
     let dir = std::env::var_os("HUM_ECS").map(PathBuf::from).unwrap_or_else(|| auth::data_dir().join("ecs"));
     if cfg!(target_os = "macos") { dir.join("Electron.app/Contents/MacOS/Electron") } else { dir.join("electron") }
@@ -268,6 +275,7 @@ async fn supervise(
 ) {
     loop {
         let result = match &engine {
+            #[cfg(feature = "ecs")]
             crate::setup::Engine::Ecs => run_once(&mut rx, &device, &state, &loaded, &remote).await,
             crate::setup::Engine::Soloist { bin, key } => crate::soloist::run(&mut rx, &device, &state, &loaded, &remote, bin, key, &session).await,
         };
@@ -285,6 +293,7 @@ async fn supervise(
     }
 }
 
+#[cfg(feature = "ecs")]
 async fn run_once(
     rx: &mut mpsc::UnboundedReceiver<Value>,
     device: &watch::Sender<Option<String>>,
