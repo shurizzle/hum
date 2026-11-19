@@ -88,4 +88,3 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
   missing variable (400) also triggers a rescrape.
 - Paging stops when a chunk returns fewer than 90% of `limit` tracks; playlists with many
   duplicates may stop early.
-- `Liked Songs` (`spotify:collection:tracks`) as a playback context is untested.
