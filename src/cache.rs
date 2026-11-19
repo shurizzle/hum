@@ -28,6 +28,8 @@ pub const PRUNE_TO: u64 = 512 << 20;
 const KEEP: &[&str] = &["volume"];
 /// The daemon checks at start and then this often.
 pub const PRUNE_EVERY: Duration = Duration::from_secs(15 * 60);
+/// `read_touch` rewrites a hit at most this often, bounding write transactions on reads.
+const TOUCH_AFTER: Duration = Duration::from_secs(24 * 3600);
 
 pub struct Cache {
     db: Option<(Env, Database<Str, Bytes>)>,
@@ -67,6 +69,16 @@ impl Cache {
     /// Cached payload regardless of age, for fallback when the network fails.
     pub fn read_any(&self, key: &str) -> Option<Vec<u8>> {
         self.load(key).map(|(_, value)| value)
+    }
+
+    /// Cached payload regardless of age; a hit older than `TOUCH_AFTER` is rewritten with the current
+    /// time, so pruning by write time spares it. Only for keys without a TTL: it resets freshness.
+    pub fn read_touch(&self, key: &str) -> Option<Vec<u8>> {
+        let (at, value) = self.load(key)?;
+        if now().saturating_sub(at) > TOUCH_AFTER.as_secs() {
+            self.store(key, &value, now());
+        }
+        Some(value)
     }
 
     pub fn write(&self, key: &str, bytes: &[u8]) {
@@ -190,6 +202,23 @@ mod tests {
         assert_eq!(cache.read_any("mid"), None);
         assert!(cache.read_any("new").is_some());
         assert!(cache.read_any("volume").is_some());
+        drop(cache);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn read_touch_refreshes_old_entries() {
+        let dir = std::env::temp_dir().join(format!("hum-cache-touch-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = Cache::open(&dir).unwrap();
+        let old = now() - TOUCH_AFTER.as_secs() - 10;
+        let recent = now() - 10;
+        cache.store("cover:a", b"a", old);
+        cache.store("cover:b", b"b", recent);
+        assert_eq!(cache.read_touch("cover:a"), Some(b"a".to_vec()));
+        assert_eq!(cache.read_touch("cover:b"), Some(b"b".to_vec()));
+        assert!(cache.load("cover:a").unwrap().0 >= recent, "old hit rewritten");
+        assert_eq!(cache.load("cover:b").unwrap().0, recent, "recent hit untouched");
         drop(cache);
         let _ = std::fs::remove_dir_all(dir);
     }

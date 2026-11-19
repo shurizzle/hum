@@ -121,7 +121,7 @@ impl Images {
                 let task = tokio::spawn(async move {
                     // Covers never change for a url: a disk hit skips the network for good.
                     let key = format!("cover:{url}");
-                    let bytes = match Cache::global().read_any(&key) {
+                    let bytes = match Cache::global().read_touch(&key) {
                         Some(b) => Some(b.into()),
                         None => {
                             let b = async { http.get(&url).send().await?.error_for_status()?.bytes().await }.await.ok();

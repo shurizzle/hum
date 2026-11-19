@@ -67,7 +67,7 @@ else is ignored.
 | Album page (raw pathfinder JSON) | `album:<id>:<offset>:<limit>` | 7 days | `Api::open` |
 | Artist overview (raw JSON) | `artist:<id>` | 24 h | `Api::open` |
 | Track metadata (`meta::Track` JSON) | `track:<id>` | 30 days | `meta::tracks` (daemon) |
-| Cover bytes | `cover:<url>` | never expires | `tui::images` |
+| Cover bytes | `cover:<url>` | never expires; a hit older than 24 h is rewritten (`Cache::read_touch`) | `tui::images` |
 | Lyrics (`LyricsLine`s JSON, empty = none) | `lyrics:<id>` | 7 days | `meta::lyrics` (daemon) |
 | Player volume (u16 LE) | `volume` | never expires | `player::run_once`: set on `ready`, saved on change once the SDK reported the restored value |
 
@@ -78,7 +78,8 @@ else is ignored.
 - Playlists, home, library (Liked Songs included) and search are never cached: they change often.
 - Best effort: open or I/O failures disable or skip the cache silently (one warning on open).
 - Pruning (`Cache::prune`): the daemon checks at start and every 15 min (`PRUNE_EVERY`). When the
-  environment uses more than 768 MiB (`PRUNE_ABOVE`), it deletes entries by oldest write time until
+  environment uses more than 768 MiB (`PRUNE_ABOVE`), it deletes entries by oldest write time (covers: last write or last
+  disk hit, within 24 h) until
   keys + values sum to at most 512 MiB (`PRUNE_TO`), in one write transaction. Entries without a
   valid header go first; `volume` is never pruned. LMDB reuses the freed pages; the file never
   shrinks.

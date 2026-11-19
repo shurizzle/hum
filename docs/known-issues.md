@@ -48,10 +48,6 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
 
 ## Other
 
-- Disk cache pruning goes by write time, not access time (LMDB reads cannot record it cheaply):
-  a cover written long ago and seen daily can be pruned and refetched. Pruning runs only while a
-  daemon is up. The file (`~/Library/Caches/hum/cache.db`) keeps its peak size; delete the
-  directory to shrink it.
 - pathfinder hashes rotate with web player releases; the first call after a rotation rescrapes the
   bundle (~46 chunk downloads).
 - A pathfinder 4xx (except auth, timeout, rate limit) drops that operation's cached hash: a
