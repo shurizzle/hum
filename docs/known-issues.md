@@ -45,7 +45,6 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
 - Linux: the `hum` binary is fully static (musl), but Electron is a glibc build needing system
   libraries (`libnss3`, `libasound2`, `libgbm`, ...): no playback on musl distros (Alpine), and
   minimal installs need those packages.
-- Linux without X/Wayland: `--ozone-platform=headless` with Widevine is untested.
 - ECS is installed and VMP-signed by hand; every ECS update needs re-signing on macOS.
 - Loose tracks get no autoplay on the SDK device, so they play inside their Song Radio playlist
   instead: the context shown is that playlist, not the track.

@@ -10,10 +10,6 @@ const readline = require('readline');
 const send = (msg) => process.stdout.write('HUM ' + JSON.stringify(msg) + '\n');
 
 app.dock?.hide();
-// No display server on headless Linux: render offscreen.
-if (process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
-  app.commandLine.appendSwitch('ozone-platform', 'headless');
-}
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 // The SDK refuses file:// origins, so the page is served on loopback.

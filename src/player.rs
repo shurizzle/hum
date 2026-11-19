@@ -297,7 +297,14 @@ async fn run_once(
     std::fs::write(dir.join("main.js"), MAIN_JS)?;
     std::fs::write(dir.join("player.html"), PLAYER_HTML)?;
     let bin = ecs_binary();
-    let mut child = Command::new(&bin)
+    let mut cmd = Command::new(&bin);
+    // The window is never shown: render offscreen even with a display server, so the player
+    // survives the graphical session (logout, compositor crash). Must be on argv: Electron picks
+    // the ozone platform (from XDG_SESSION_TYPE) before main.js runs, so app.commandLine is too late.
+    if cfg!(target_os = "linux") {
+        cmd.args(["--ozone-platform=headless", "--disable-gpu"]);
+    }
+    let mut child = cmd
         .arg(dir.join("main.js"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

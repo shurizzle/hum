@@ -241,8 +241,12 @@ python3 -m venv .venv && .venv/bin/pip install castlabs-evs
 .venv/bin/python -m castlabs_evs.vmp sign-pkg --streaming "$ECS"
 ```
 
-Linux: same download (`linux-x64`, extract with `unzip`), no VMP; headless (no X/Wayland) uses
-`--ozone-platform=headless`, still untested.
+Linux: same download (`linux-x64`, extract with `unzip`), no VMP. The daemon always passes
+`--ozone-platform=headless --disable-gpu` on Electron's argv, display server or not: the window is
+never shown, and the player then survives the graphical session (logout, compositor crash).
+`app.commandLine` in `main.js` is too late: the ozone platform is picked from `XDG_SESSION_TYPE`
+before it runs. Tested 2026-11-19 (x86_64), with and without X/Wayland: Widevine licence and audio
+work unsigned; MPRIS (metadata, cover, PlayPause) still works headless, it goes over D-Bus.
 
 ## Authentication
 
