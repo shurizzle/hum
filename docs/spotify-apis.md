@@ -50,8 +50,11 @@ web player bundle (search for the operation's variables object in the JS).
 - An operation absent from every chunk (all downloads succeeded) is recorded in `missing` with the
   scrape time and not looked up again for 24 h (`MISSING_TTL`): lookups fail fast instead of
   downloading the whole bundle each time. Live check: `cargo test -- --ignored scrape`.
-- On a 4xx response (except 401, 403, 408, 429) the hash for that operation is dropped and
-  refetched next time; auth, timeout, rate-limit and 5xx errors keep it (`stale_hash`).
+- The hash for an operation is dropped and refetched next time only when pathfinder says it is wrong
+  (`stale_hash`): `412 "Invalid query hash"` (unknown or rotated) or `400` with
+  `GRAPHQL_UNKNOWN_OPERATION_NAME` (hash of another operation). Every other error keeps it,
+  including `400 VALIDATION_INVALID_TYPE_VARIABLE` (missing or mistyped variable: a hum bug, which a
+  rescrape would not fix).
 
 ### Response parsing
 
@@ -75,7 +78,7 @@ else is ignored.
 | Track metadata (`meta::Track` JSON) | `track:<id>` | 30 days | `meta::tracks` (daemon) |
 | Cover bytes | `cover:<url>` | never expires; a hit older than 24 h is rewritten (`Cache::read_touch`) | `tui::images` |
 | Lyrics (`LyricsLine`s JSON, empty = none) | `lyrics:<id>` | 7 days | `meta::lyrics` (daemon) |
-| pathfinder hashes (`api::Hashes` JSON) | `pathfinder-hashes` | never expires; a 4xx drops an operation | `Api::hash` |
+| pathfinder hashes (`api::Hashes` JSON) | `pathfinder-hashes` | never expires; a wrong-hash error (`stale_hash`) drops an operation | `Api::hash` |
 | Player volume (u16 LE) | `volume` | never expires | `player::run_once`: set on `ready`, saved on change once the SDK reported the restored value |
 
 - A fresh entry answers locally, no request. Expired: the request goes out and the response is

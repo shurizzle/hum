@@ -286,7 +286,7 @@ impl Api {
         let body = res.text().await?;
         if !status.is_success() {
             // A rotated hash surfaces as an error: drop it so the next call refetches.
-            if stale_hash(status) {
+            if stale_hash(status, &body) {
                 let mut hashes = self.hashes.write().unwrap();
                 if let Some(h) = hashes.as_mut() {
                     h.ops.remove(op);
@@ -511,11 +511,12 @@ fn names(v: &Value) -> String {
         .join(", ")
 }
 
-/// Whether an error status may mean a rotated hash. Auth, timeout, rate limit and server errors keep
-/// the hash: rescraping the bundle for them is ~46 downloads for nothing.
-fn stale_hash(status: reqwest::StatusCode) -> bool {
+/// Whether an error means the hash is wrong: 412 `Invalid query hash` (unknown or rotated) or 400
+/// `GRAPHQL_UNKNOWN_OPERATION_NAME` (hash of another operation). Anything else, including 400 for
+/// bad variables, keeps the hash: rescraping the bundle is ~46 downloads for nothing.
+fn stale_hash(status: reqwest::StatusCode, body: &str) -> bool {
     use reqwest::StatusCode as S;
-    status.is_client_error() && ![S::UNAUTHORIZED, S::FORBIDDEN, S::REQUEST_TIMEOUT, S::TOO_MANY_REQUESTS].contains(&status)
+    status == S::PRECONDITION_FAILED || (status == S::BAD_REQUEST && body.contains("GRAPHQL_UNKNOWN_OPERATION_NAME"))
 }
 
 #[cfg(test)]
@@ -562,13 +563,16 @@ mod tests {
     }
 
     #[test]
-    fn only_client_errors_drop_the_hash() {
+    fn only_wrong_hash_errors_drop_the_hash() {
         let st = |c| reqwest::StatusCode::from_u16(c).unwrap();
-        for c in [400, 404, 412] {
-            assert!(stale_hash(st(c)), "{c}");
-        }
-        for c in [401, 403, 408, 429, 500, 503] {
-            assert!(!stale_hash(st(c)), "{c}");
+        // Bodies as returned by pathfinder (measured 2026-11-19).
+        let unknown_op = r#"{"errors":[{"message":"Unknown operation named \"getAlbum\"","extensions":{"code":"GRAPHQL_UNKNOWN_OPERATION_NAME"}}]}"#;
+        let bad_var = r#"{"errors":[{"message":"missing variable `$uri`: for required GraphQL type `ID!`","extensions":{"name":"uri","code":"VALIDATION_INVALID_TYPE_VARIABLE"}}]}"#;
+        assert!(stale_hash(st(412), r#""Invalid query hash""#));
+        assert!(stale_hash(st(400), unknown_op));
+        assert!(!stale_hash(st(400), bad_var));
+        for c in [401, 403, 404, 408, 429, 500, 503] {
+            assert!(!stale_hash(st(c), ""), "{c}");
         }
     }
 
