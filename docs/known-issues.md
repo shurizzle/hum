@@ -79,9 +79,10 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
 
 ## Other
 
-- Caches have no eviction: in-memory covers grow for the life of a client (sizes left over from
-  resizes stay); the disk cache (`~/Library/Caches/hum/cache.db`, map capped at 1 GiB) grows
-  forever. Delete the directory to reset it.
+- Disk cache pruning goes by write time, not access time (LMDB reads cannot record it cheaply):
+  a cover written long ago and seen daily can be pruned and refetched. Pruning runs only while a
+  daemon is up. The file (`~/Library/Caches/hum/cache.db`) keeps its peak size; delete the
+  directory to shrink it.
 - pathfinder hashes rotate with web player releases; the first call after a rotation rescrapes the
   bundle (~46 chunk downloads).
 - A pathfinder error for any reason drops that operation's cached hash.

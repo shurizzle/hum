@@ -20,6 +20,14 @@ use heed::{
 
 const MAGIC: &[u8; 3] = b"hc1";
 const HEADER: usize = 3 + 8;
+/// Pruning starts when the environment uses more than this (the map is 1 GiB) ...
+pub const PRUNE_ABOVE: u64 = 768 << 20;
+/// ... and deletes the oldest entries until payloads sum to less than this.
+pub const PRUNE_TO: u64 = 512 << 20;
+/// Keys never pruned.
+const KEEP: &[&str] = &["volume"];
+/// The daemon checks at start and then this often.
+pub const PRUNE_EVERY: Duration = Duration::from_secs(15 * 60);
 
 pub struct Cache {
     db: Option<(Env, Database<Str, Bytes>)>,
@@ -78,6 +86,48 @@ impl Cache {
         })();
     }
 
+    /// When the environment uses more than `above` bytes, deletes the least recently written entries
+    /// until the remaining keys and values sum to at most `to` bytes. Entries without a valid header go
+    /// first. Freed pages are reused by LMDB; the file does not shrink.
+    pub fn prune(&self, above: u64, to: u64) {
+        let Some((env, db)) = &self.db else { return };
+        if env.non_free_pages_size().is_ok_and(|used| used <= above) {
+            return;
+        }
+        let deleted = (|| -> heed::Result<usize> {
+            let mut wtxn = env.write_txn()?;
+            let mut entries = Vec::new();
+            let mut total = 0u64;
+            for item in db.iter(&wtxn)? {
+                let (key, value) = item?;
+                // Settings, not cached data: losing them changes behavior.
+                if KEEP.contains(&key) {
+                    continue;
+                }
+                let at = decode(value).map_or(0, |(at, _)| at);
+                let size = (key.len() + value.len()) as u64;
+                total += size;
+                entries.push((at, size, key.to_owned()));
+            }
+            entries.sort_unstable_by_key(|(at, ..)| *at);
+            let mut deleted = 0;
+            for (_, size, key) in entries {
+                if total <= to {
+                    break;
+                }
+                db.delete(&mut wtxn, &key)?;
+                total -= size;
+                deleted += 1;
+            }
+            wtxn.commit()?;
+            Ok(deleted)
+        })();
+        match deleted {
+            Ok(n) => log::info!("cache: pruned {n} entries"),
+            Err(e) => log::warn!("cache prune failed: {e}"),
+        }
+    }
+
     /// (write time, payload); entries without a valid header are ignored.
     fn load(&self, key: &str) -> Option<(u64, Vec<u8>)> {
         let (env, db) = self.db.as_ref()?;
@@ -118,6 +168,28 @@ mod tests {
         assert_eq!(cache.read_fresh("album:1", Duration::from_secs(60)), None);
         assert_eq!(cache.read_fresh("album:1", Duration::from_secs(300)), Some(b"payload".to_vec()));
         assert_eq!(cache.read_any("album:1"), Some(b"payload".to_vec()));
+        drop(cache);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn prune_deletes_the_oldest_entries() {
+        let dir = std::env::temp_dir().join(format!("hum-cache-prune-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = Cache::open(&dir).unwrap();
+        let at = now();
+        cache.store("old", &[0; 100], at - 30);
+        cache.store("mid", &[0; 100], at - 20);
+        cache.store("new", &[0; 100], at - 10);
+        cache.store("volume", b"\x10\0", 0);
+        cache.prune(u64::MAX, 0);
+        assert!(cache.read_any("old").is_some(), "under the threshold: untouched");
+        // Each entry is ~114 bytes: room for one.
+        cache.prune(0, 150);
+        assert_eq!(cache.read_any("old"), None);
+        assert_eq!(cache.read_any("mid"), None);
+        assert!(cache.read_any("new").is_some());
+        assert!(cache.read_any("volume").is_some());
         drop(cache);
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -90,6 +90,14 @@ pub async fn run() -> Result<()> {
     let listener = UnixListener::bind(&path)?;
     let pid_path = proto::runtime_path("hum.pid");
     std::fs::write(&pid_path, std::process::id().to_string())?;
+    // Disk cache GC, shared with clients: the daemon outlives them. The size check is cheap.
+    tokio::spawn(async {
+        let mut tick = tokio::time::interval(crate::cache::PRUNE_EVERY);
+        loop {
+            tick.tick().await;
+            let _ = tokio::task::spawn_blocking(|| crate::cache::Cache::global().prune(crate::cache::PRUNE_ABOVE, crate::cache::PRUNE_TO)).await;
+        }
+    });
 
     // The librespot session only serves browsing tokens (login5, client token); playback is the player's.
     let cache = auth::cache()?;

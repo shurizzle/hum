@@ -120,8 +120,11 @@ Wheel scrolls. Pointer motion events are ignored and do not redraw.
   One encoder per size: sharing one between sizes re-encodes every frame and makes covers blink.
 - A placeholder (`♪`) is drawn first, the image over it when ready.
 - Downloads of covers not drawn in a frame are aborted (`begin_frame`/`end_frame`).
-- No eviction yet: the in-memory cache grows for the life of the client, the disk cache forever
-  (see known issues).
+- In-memory eviction by last drawn frame (`end_frame` → `evict`): over 128 decoded covers
+  (`MAX_COVERS`) or 64 encoders (`MAX_ENCODERS`) the least recently drawn are dropped down to 3/4 of
+  the cap; anything drawn this frame or still loading stays. A dropped encoder ends its task.
+  Evicted covers reload from the disk cache, no network. Disk pruning: see
+  [spotify-apis.md](spotify-apis.md#disk-cache).
 
 ## Rendering rules
 

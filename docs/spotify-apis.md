@@ -76,7 +76,11 @@ else is ignored.
 - Raw responses are cached, not parsed items, so parser changes apply to cached data too.
 - Playlists, home, library (Liked Songs included) and search are never cached: they change often.
 - Best effort: open or I/O failures disable or skip the cache silently (one warning on open).
-- Unbounded: no eviction (see known issues).
+- Pruning (`Cache::prune`): the daemon checks at start and every 15 min (`PRUNE_EVERY`). When the
+  environment uses more than 768 MiB (`PRUNE_ABOVE`), it deletes entries by oldest write time until
+  keys + values sum to at most 512 MiB (`PRUNE_TO`), in one write transaction. Entries without a
+  valid header go first; `volume` is never pruned. LMDB reuses the freed pages; the file never
+  shrinks.
 
 ## Web API
 
