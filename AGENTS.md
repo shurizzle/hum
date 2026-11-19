@@ -42,6 +42,7 @@ src/tui/draw.rs    Spotify-like layout and rendering
 src/tui/images.rs  async cover pipeline
 .github/workflows/ecs.yml    publishes signed Electron as `ecs-<castLabs tag>` releases
 .github/workflows/release.yml  on `vX.Y.Z` tags: binaries for macOS and Linux (static musl), aarch64 + x86_64
+aur/hum-bin/       AUR package over the Linux release binaries; mirror of the AUR git repo
 ```
 
 ## Commands
@@ -68,6 +69,8 @@ Rust toolchain comes from Homebrew `rustup`; `cargo` lives in `/opt/homebrew/opt
 - Prefer existing deps; dependencies build with `opt-level = 3` in dev.
 - Releases: hum is `vX.Y.Z`; signed Electron is a separate `ecs-<castLabs tag>` release made by
   `.github/workflows/ecs.yml` (never latest). Bump `player::ECS_VERSION` only after trying a new one.
+- After a `vX.Y.Z` release: in `aur/hum-bin/` bump `pkgver` (reset `pkgrel=1`), run `updpkgsums`
+  and `makepkg --printsrcinfo > .SRCINFO`, then copy `PKGBUILD`, `.SRCINFO`, `LICENSE` to the AUR repo.
 - TLS is rustls only (no OpenSSL), so Linux builds can be fully static (musl): librespot-core/oauth
   use `rustls-tls-webpki-roots` without default features, and so does our `reqwest` (0.12, same as
   `oauth2`, so it is linked once). Only ring is compiled in (no aws-lc-rs); `main` installs the ring

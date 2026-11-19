@@ -3,6 +3,7 @@ name = "hum-tui"
 version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/shurizzle/hum"
+license = "MIT"
 
 # Prebuilt binaries from .github/workflows/release.yml (`hum-<target>.tar.gz` on `vX.Y.Z` releases).
 [package.metadata.binstall]
