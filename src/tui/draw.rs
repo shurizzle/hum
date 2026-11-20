@@ -361,7 +361,10 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
     while page.top < sel && blocks[page.top..=sel].iter().map(|b| height(*b)).sum::<u16>() > inner.height {
         page.top += 1;
     }
-    if blocks[..page.top].iter().all(|b| matches!(b, Blk::Header | Blk::Title(_))) {
+    // Snap back to the very top only when the selection is still fully visible from there.
+    if blocks[..page.top].iter().all(|b| matches!(b, Blk::Header | Blk::Title(_)))
+        && blocks[..=sel].iter().map(|b| height(*b)).sum::<u16>() <= inner.height
+    {
         page.top = 0;
     }
 
