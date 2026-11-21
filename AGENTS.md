@@ -71,6 +71,8 @@ Rust toolchain comes from Homebrew `rustup`; `cargo` lives in `/opt/homebrew/opt
   `.github/workflows/ecs.yml` (never latest). Bump `player::ECS_VERSION` only after trying a new one.
 - After a `vX.Y.Z` release: in `aur/hum-bin/` bump `pkgver` (reset `pkgrel=1`), run `updpkgsums`
   and `makepkg --printsrcinfo > .SRCINFO`, then copy `PKGBUILD`, `.SRCINFO`, `LICENSE` to the AUR repo.
+  In the Homebrew tap repo `shurizzle/homebrew-hum`, `Casks/hum.rb`: bump `version` and both `sha256`
+  (`curl -sL <asset url> | shasum -a 256`).
 - TLS is rustls only (no OpenSSL), so Linux builds can be fully static (musl): librespot-core/oauth
   use `rustls-tls-webpki-roots` without default features, and so does our `reqwest` (0.12, same as
   `oauth2`, so it is linked once). Only ring is compiled in (no aws-lc-rs); `main` installs the ring

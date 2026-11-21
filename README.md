@@ -38,6 +38,10 @@ A Spotify client for the terminal, laid out like the Spotify desktop app, with c
   `x86_64-apple-darwin`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` (Linux ones fully
   static). macOS binaries are not notarized: after a browser download run
   `xattr -d com.apple.quarantine hum`.
+- macOS (Homebrew cask, prebuilt binary + shell completions; on Apple Silicon pulls in the
+  `spotify-soloist` cask): `brew install --cask shurizzle/hum/hum`. `spotify-soloist` is unversioned
+  and Soloist builds expire after 90 days, so update it with
+  `brew upgrade --cask --greedy spotify-soloist`.
 - Arch Linux (AUR, prebuilt binary + shell completions, pulls in Soloist): `paru -S hum-bin`
 - From source:
 

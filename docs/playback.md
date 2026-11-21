@@ -26,7 +26,9 @@ over the same command/state channels, so the daemon's dispatch (`src/daemon.rs`)
 
 Soloist is a closed-source binary the user installs themselves (Spotify forbids redistribution; builds
 expire 90 days after their build date, exiting `10`). A per-user developer API key from
-<https://developer.spotify.com/dashboard/soloist> is required.
+<https://developer.spotify.com/dashboard/soloist> is required. Packages install it as a dependency:
+the Homebrew cask (tap `shurizzle/homebrew-hum`) pulls the `spotify-soloist` cask on Apple Silicon (no Intel
+Soloist build: x86_64 macOS hum uses ECS); the AUR package depends on `spotify-soloist`.
 
 ### Pairing (`soloist::setup`, foreground, one-time)
 
