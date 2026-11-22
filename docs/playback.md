@@ -34,8 +34,11 @@ Soloist build: x86_64 macOS hum uses ECS); the AUR package depends on `spotify-s
 
 No browser, no device picker. hum mints Soloist's login itself on the librespot session:
 
-1. Prompt for the API key (opens the dashboard), get the session access token
-   (`session.login5().auth_token()`) and the canonical user id (`session.username()`).
+1. Prompt for the API key, get the session access token
+   (`session.login5().auth_token()`) and the canonical user id (`session.username()`). The
+   dashboard is opened in the login tab: when `auth::ensure_login` runs a browser login and pairing
+   comes next, its last redirect goes to the dashboard (`soloist::DASHBOARD_SHOWN` is set) instead
+   of the "logged in" page; otherwise `setup` opens it in a new tab.
 2. Spawn `soloist -n hum -k <key> -D <config>/soloist --pair -v`; read the zeroconf HTTP port from its
    log line `Started ZeroConf service on port <N>`.
 3. `GET http://127.0.0.1:<N>/zc?action=getInfo` → `authInfo` (base64 protobuf):

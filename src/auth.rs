@@ -133,17 +133,18 @@ impl Flow {
     }
 }
 
-/// Authorizes every flow in a single browser tab. Returns the codes in order.
-fn authorize(urls: Vec<String>) -> Result<Vec<String>> {
+/// Authorizes every flow in a single browser tab, then sends the tab to `finish` if given.
+/// Returns the codes in order.
+fn authorize(urls: Vec<String>, finish: Option<&str>) -> Result<Vec<String>> {
     let listener = std::net::TcpListener::bind("127.0.0.1:8898").context("listen on 127.0.0.1:8898")?;
     eprintln!("hum: log in to Spotify in the browser (or open {})", urls[0]);
     open::that_in_background(&urls[0]);
-    collect_codes(&listener, &urls)
+    collect_codes(&listener, &urls, finish)
 }
 
 /// Serves the OAuth redirects: each code but the last is answered with a redirect to the next
-/// app's consent page, so the user stays in one tab.
-fn collect_codes(listener: &std::net::TcpListener, urls: &[String]) -> Result<Vec<String>> {
+/// app's consent page, so the user stays in one tab; the last one redirects to `finish`, if given.
+fn collect_codes(listener: &std::net::TcpListener, urls: &[String], finish: Option<&str>) -> Result<Vec<String>> {
     use std::io::{BufRead, BufReader, Write};
     let mut codes = vec![];
     while codes.len() < urls.len() {
@@ -162,7 +163,7 @@ fn collect_codes(listener: &std::net::TcpListener, urls: &[String]) -> Result<Ve
             bail!("authorization refused: {}", params.get("error").map_or("unknown", |e| e.as_str()));
         };
         codes.push(code.clone());
-        let reply = match urls.get(codes.len()) {
+        let reply = match urls.get(codes.len()).map(String::as_str).or(finish) {
             Some(next) => format!("HTTP/1.1 302 Found\r\nlocation: {next}\r\ncontent-length: 0\r\n\r\n"),
             None => {
                 let body = "<h1>hum: logged in, return to the terminal.</h1>";
@@ -176,7 +177,8 @@ fn collect_codes(listener: &std::net::TcpListener, urls: &[String]) -> Result<Ve
 
 /// Logs in through the browser when needed: session credentials (keymaster app, for the access
 /// point, login5 and pathfinder) and the web token (hum's app, for the Web API and the SDK). Both
-/// apps are authorized in one tab. Must run in the foreground process: the daemon has no terminal
+/// apps are authorized in one tab, which then opens the Soloist dashboard when pairing comes next
+/// (`setup::ensure_engine`), so the API key is fetched in the same tab. Must run in the foreground process: the daemon has no terminal
 /// or browser.
 pub async fn ensure_login() -> Result<()> {
     let cache = cache()?;
@@ -192,7 +194,11 @@ pub async fn ensure_login() -> Result<()> {
         return Ok(());
     }
     let urls = flows.iter().map(|f| f.url.clone()).collect();
-    let codes = tokio::task::spawn_blocking(move || authorize(urls)).await??;
+    let pairing = crate::setup::engine().is_none() && crate::soloist::binary().is_some();
+    let codes = tokio::task::spawn_blocking(move || authorize(urls, pairing.then_some(crate::soloist::DASHBOARD))).await??;
+    if pairing {
+        crate::soloist::DASHBOARD_SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     for (flow, code) in flows.into_iter().zip(codes) {
         if flow.client_id == SESSION_CLIENT_ID {
             let token = flow.exchange(&code).await.context("session login")?;
@@ -247,10 +253,20 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let urls = vec!["https://a/auth".to_string(), "https://b/auth".to_string()];
-        let server = std::thread::spawn(move || collect_codes(&listener, &urls));
+        let server = std::thread::spawn(move || collect_codes(&listener, &urls, None));
         assert!(get(port, "/favicon.ico").starts_with("HTTP/1.1 404"));
         assert!(get(port, "/login?code=one&state=x").contains("location: https://b/auth"));
         assert!(get(port, "/login?code=two").contains("logged in"));
         assert_eq!(server.join().unwrap().unwrap(), ["one", "two"]);
+    }
+
+    #[test]
+    fn last_code_redirects_to_finish() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let urls = vec!["https://a/auth".to_string()];
+        let server = std::thread::spawn(move || collect_codes(&listener, &urls, Some("https://dash")));
+        assert!(get(port, "/login?code=one").contains("location: https://dash"));
+        assert_eq!(server.join().unwrap().unwrap(), ["one"]);
     }
 }

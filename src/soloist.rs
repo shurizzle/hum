@@ -39,6 +39,11 @@ const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 const VOLUME_KEY: &str = "volume";
 /// Soloist exits 10 when its build has expired (90 days after its build date).
 const EXIT_EXPIRED: i32 = 10;
+/// Where the user gets the API key for pairing.
+pub const DASHBOARD: &str = "https://developer.spotify.com/dashboard/soloist";
+/// Set when the login tab already ended on `DASHBOARD` (`auth::ensure_login`), so `setup` does not
+/// open a second tab.
+pub static DASHBOARD_SHOWN: AtomicBool = AtomicBool::new(false);
 
 /// Soloist binary: `$HUM_SOLOIST`, else `soloist` found on `PATH`.
 pub fn binary() -> Option<PathBuf> {
@@ -72,8 +77,10 @@ pub fn key() -> Option<String> {
 /// auth code on the librespot session and delivers it over zeroconf. On success writes the key so
 /// the daemon picks Soloist as its engine. Runs in the foreground (needs stdin and the session).
 pub async fn setup(bin: &Path) -> Result<()> {
-    let _ = open::that_in_background("https://developer.spotify.com/dashboard/soloist");
-    eprintln!("hum: paste your Spotify Soloist API key (https://developer.spotify.com/dashboard/soloist):");
+    if !DASHBOARD_SHOWN.load(Ordering::Relaxed) {
+        let _ = open::that_in_background(DASHBOARD);
+    }
+    eprintln!("hum: paste your Spotify Soloist API key ({DASHBOARD}):");
     let api_key = tokio::task::spawn_blocking(|| {
         let mut s = String::new();
         std::io::stdin().read_line(&mut s)?;

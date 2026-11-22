@@ -60,7 +60,8 @@ cargo run --release        # or: cargo install --path . && hum
 ```
 
 The first run opens the browser once to log in (two Spotify consent pages the very first time, in
-the same tab). Then:
+the same tab; with Soloist installed the tab then lands on the Soloist dashboard for the API key to
+paste in the terminal). Then:
 
 ```sh
 hum          # open the TUI (starts the daemon if needed)
