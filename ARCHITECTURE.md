@@ -86,6 +86,8 @@ both see the same now-playing state.
 - One `tokio::select!` loop: terminal events, daemon messages, background fetch results, image
   results, timers. UI responsiveness has priority: all network and image work runs in tasks and
   reports back over channels; nothing blocks the loop.
+- Keys go through `tui::keys::Keymap`, built at startup from `config.ron` over the compiled-in
+  defaults (`src/config.default.ron`); a pending sequence's timeout is one more `select!` arm.
 - Network fetches for pages are cancellable: every navigation aborts the previous fetch
   (`AbortHandle`) and bumps a generation counter that discards stale results.
 - Playlists/albums open immediately with the known header, then stream tracks in chunks (30, then
@@ -97,6 +99,7 @@ both see the same now-playing state.
 |---|---|
 | `~/Library/Application Support/hum/credentials.json` | Stored librespot credentials |
 | `~/Library/Application Support/hum/web-token.json` | hum developer app token + refresh token (ECS only) |
+| `~/Library/Application Support/hum/config.ron` (Linux: `$XDG_CONFIG_HOME/hum/config.ron`) | User config, read by the TUI at startup ([docs/config.md](docs/config.md)) |
 | `~/Library/Application Support/hum/last-page.json` | Last open playlist/album/artist (client resume) |
 | `~/Library/Application Support/hum/ecs/` (Linux: `$XDG_DATA_HOME/hum/ecs/`) | castLabs Electron (`ecs` feature), installed automatically before the first daemon start (`setup::ensure_ecs`); `VERSION` holds the installed `ECS_VERSION` |
 | `~/Library/Application Support/hum/soloist-key` (Linux: `$XDG_CONFIG_HOME/hum/soloist-key`) | Spotify Soloist developer API key, written after pairing; its presence selects the Soloist engine (`src/soloist.rs`, [docs/playback.md](docs/playback.md)) |
@@ -107,4 +110,4 @@ both see the same now-playing state.
 | `$XDG_RUNTIME_DIR` or `$TMPDIR`: `hum.sock`, `hum.pid`, `hum.lock` | IPC socket, daemon pid, spawn lock |
 
 Details: [docs/ipc.md](docs/ipc.md), [docs/playback.md](docs/playback.md), [docs/spotify-apis.md](docs/spotify-apis.md),
-[docs/tui.md](docs/tui.md), [docs/known-issues.md](docs/known-issues.md).
+[docs/tui.md](docs/tui.md), [docs/config.md](docs/config.md), [docs/known-issues.md](docs/known-issues.md).

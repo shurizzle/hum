@@ -60,7 +60,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_devices(f, app, bar);
     }
     if app.help {
-        draw_help(f);
+        draw_help(f, app);
     }
     app.images.end_frame();
 }
@@ -133,31 +133,6 @@ fn draw_top(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(status_text).fg(if app.status.is_empty() { DIM } else { GRAY }).alignment(Alignment::Right), Rect { y: status.y + 1, height: 1, ..status });
 }
 
-const KEYS: &[(&str, &str)] = &[
-    ("h j k l / arrows", "Move"),
-    ("Tab", "Focus library / main / queue"),
-    ("Enter", "Open, play track"),
-    ("Esc / Backspace", "Back, cancel loading"),
-    ("/", "Search"),
-    ("g", "Home"),
-    ("Space", "Play / pause"),
-    ("n / b", "Next / previous"),
-    ("H / L, Shift+← / →", "Seek -/+10 s"),
-    ("+ / -", "Volume"),
-    ("m", "Mute"),
-    ("s / r", "Shuffle / repeat"),
-    ("a", "Add to queue"),
-    ("f / F", "Like selected / playing track"),
-    ("d", "Remove from queue (queue focused)"),
-    ("J / K", "Move in queue (queue focused)"),
-    ("P", "Play open page"),
-    ("p", "Play selected without opening"),
-    ("[ / ]", "Toggle library / now playing"),
-    ("c", "Connect: pick the playing device"),
-    ("y", "Toggle lyrics"),
-    ("?", "This help"),
-    ("q / Q", "Quit / quit and stop daemon"),
-];
 
 /// Connect device picker, above the right end of the player bar like Spotify's.
 fn draw_devices(f: &mut Frame, app: &mut App, bar: Rect) {
@@ -190,11 +165,12 @@ fn draw_devices(f: &mut Frame, app: &mut App, bar: Rect) {
     }
 }
 
-fn draw_help(f: &mut Frame) {
-    let area = f.area().centered(Constraint::Length(58), Constraint::Length(KEYS.len() as u16 + 4));
-    let lines: Vec<Line> = KEYS
+fn draw_help(f: &mut Frame, app: &App) {
+    let rows = app.keymap.help();
+    let area = f.area().centered(Constraint::Length(72), Constraint::Length(rows.len() as u16 + 4));
+    let lines: Vec<Line> = rows
         .iter()
-        .map(|(k, d)| Line::from(vec![Span::styled(format!("{k:>18}  "), Style::new().fg(GREEN).bold()), Span::styled(*d, Style::new().fg(TEXT))]))
+        .map(|(k, d)| Line::from(vec![Span::styled(format!("{k:>22}  "), Style::new().fg(GREEN).bold()), Span::styled(d.as_str(), Style::new().fg(TEXT))]))
         .collect();
     f.render_widget(Clear, area);
     f.render_widget(Paragraph::new(lines).block(focus_panel(true).title(" Keys ").title_bottom(Line::from(" any key to close ").right_aligned()).padding(Padding::vertical(1))), area);

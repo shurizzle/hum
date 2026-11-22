@@ -1,4 +1,4 @@
-//! One-shot remote-control subcommands: `hum play`, `hum toggle`, `hum set`, `hum get`, ...
+//! One-shot remote-control subcommands: `hum play`, `hum toggle`, `hum cycle`, `hum set`, `hum get`, ...
 
 use std::time::Duration;
 
@@ -31,6 +31,9 @@ pub enum Remote {
     /// Flip play/pause, shuffle, repeat or like
     #[command(subcommand)]
     Toggle(Toggle),
+    /// Step through the states of repeat
+    #[command(subcommand)]
+    Cycle(Cycle),
     /// Set play/pause, shuffle, repeat, like, volume or position
     #[command(subcommand)]
     Set(Set),
@@ -56,6 +59,12 @@ pub enum Toggle {
     /// Like/unlike the playing track
     Like,
     Mute,
+}
+
+#[derive(Subcommand, Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+pub enum Cycle {
+    /// Off, on (context), track
+    Repeat,
 }
 
 #[derive(Subcommand)]
@@ -100,7 +109,7 @@ pub enum Get {
     Status,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, ValueEnum, serde::Deserialize)]
 pub enum OnOff {
     On,
     Off,
@@ -112,7 +121,7 @@ impl From<OnOff> for bool {
     }
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, ValueEnum, serde::Deserialize)]
 pub enum RepeatArg {
     Off,
     On,
@@ -140,14 +149,7 @@ pub async fn run(remote: Remote) -> Result<()> {
     let mut conn = spawn::connect().await?;
     let mut np = state(&mut conn).await?;
     let cmd = match remote {
-        Remote::Play { uri } => {
-            let uri = spotify_uri(&uri);
-            if uri.starts_with("spotify:track:") {
-                Cmd::Load { context_uri: None, tracks: vec![uri], track: None }
-            } else {
-                Cmd::Load { context_uri: Some(uri), tracks: vec![], track: None }
-            }
-        }
+        Remote::Play { uri } => play(&uri),
         Remote::Next => Cmd::Next,
         Remote::Prev => Cmd::Prev,
         Remote::Queue { uri } => Cmd::Queue(spotify_uri(&uri)),
@@ -155,6 +157,7 @@ pub async fn run(remote: Remote) -> Result<()> {
         Remote::Toggle(Toggle::Shuffle) => Cmd::Shuffle(!np.shuffle),
         Remote::Toggle(Toggle::Repeat) => Cmd::Repeat(if np.repeat == Repeat::Off { Repeat::Context } else { Repeat::Off }),
         Remote::Toggle(Toggle::Mute) => Cmd::Mute(!np.muted),
+        Remote::Cycle(Cycle::Repeat) => Cmd::Repeat(np.repeat.cycle()),
         Remote::Toggle(Toggle::Like) => return like(&mut conn, &mut np, None).await,
         Remote::Set(Set::Like { state }) => return like(&mut conn, &mut np, Some(state.into())).await,
         Remote::Set(Set::Play { state }) if bool::from(state) == np.playing => return Ok(()),
@@ -162,8 +165,8 @@ pub async fn run(remote: Remote) -> Result<()> {
         Remote::Set(Set::Shuffle { state }) => Cmd::Shuffle(state.into()),
         Remote::Set(Set::Repeat { state }) => Cmd::Repeat(state.into()),
         Remote::Set(Set::Mute { state }) => Cmd::Mute(state.into()),
-        Remote::Set(Set::Volume { level }) => Cmd::Volume(volume(&level, np.volume)?),
-        Remote::Set(Set::Position { seconds }) => Cmd::Seek(seek(&seconds, &np, proto::now_ms())?),
+        Remote::Set(Set::Volume { level }) => Cmd::Volume(volume(Level::parse("volume", &level)?, np.volume)),
+        Remote::Set(Set::Position { seconds }) => Cmd::Seek(seek(Level::parse("position", &seconds)?, &np, proto::now_ms())),
         Remote::Devices => {
             for d in devices(&mut conn, &mut np).await? {
                 println!("{} {}\t{}\t{}", if d.active { "*" } else { " " }, d.name, d.kind, d.id);
@@ -309,8 +312,18 @@ async fn devices(conn: &mut Conn, np: &mut NowPlaying) -> Result<Vec<proto::Devi
     }
 }
 
+/// Plays a track alone, anything else as a context.
+pub fn play(uri: &str) -> Cmd {
+    let uri = spotify_uri(uri);
+    if uri.starts_with("spotify:track:") {
+        Cmd::Load { context_uri: None, tracks: vec![uri], track: None }
+    } else {
+        Cmd::Load { context_uri: Some(uri), tracks: vec![], track: None }
+    }
+}
+
 /// `spotify:…` uris pass through; `https://open.spotify.com/[intl-xx/]<kind>/<id>?…` links become uris.
-fn spotify_uri(s: &str) -> String {
+pub fn spotify_uri(s: &str) -> String {
     let Some(path) = s.strip_prefix("https://open.spotify.com/") else { return s.to_string() };
     let path = path.split(['?', '#']).next().unwrap_or_default();
     let parts: Vec<_> = path.split('/').filter(|p| !p.is_empty() && !p.starts_with("intl-")).collect();
@@ -355,24 +368,44 @@ async fn finish(mut conn: Conn, cmd: Cmd) -> Result<()> {
     Ok(())
 }
 
-/// `arg` as `N` (absolute) or `+N`/`-N` (relative to `current`).
-fn level(what: &str, arg: &str, current: i64) -> Result<i64> {
-    let Ok(n) = arg.parse::<i64>() else { bail!("{what}: expected N, +N or -N, got {arg:?}") };
-    Ok(if arg.starts_with(['+', '-']) { current + n } else { n })
+/// A volume or position: absolute, or relative to the current one.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+pub enum Level {
+    Set(u32),
+    Relative(i32),
 }
 
-/// `level` is a percentage, absolute (`40`) or relative to `current` (`+5`, `-5`).
-fn volume(level_arg: &str, current: u16) -> Result<u16> {
-    let pct = level("volume", level_arg, percent(current) as i64)?;
-    Ok((pct.clamp(0, 100) * u16::MAX as i64 / 100) as u16)
+impl Level {
+    /// `N` (absolute) or `+N`/`-N` (relative).
+    pub fn parse(what: &str, arg: &str) -> Result<Level> {
+        let rel = arg.starts_with(['+', '-']);
+        match (rel, arg.parse::<i32>(), arg.parse::<u32>()) {
+            (true, Ok(n), _) => Ok(Level::Relative(n)),
+            (false, _, Ok(n)) => Ok(Level::Set(n)),
+            _ => bail!("{what}: expected N, +N or -N, got {arg:?}"),
+        }
+    }
+
+    fn apply(self, current: i64) -> i64 {
+        match self {
+            Level::Set(n) => n as i64,
+            Level::Relative(n) => current + n as i64,
+        }
+    }
 }
 
-/// Target position in ms for `seconds` (absolute or `+N`/`-N` from the extrapolated position).
-fn seek(seconds: &str, np: &NowPlaying, now_ms: u64) -> Result<u32> {
+/// `level` is a percentage.
+pub fn volume(level: Level, current: u16) -> u16 {
+    let pct = level.apply(percent(current) as i64);
+    (pct.clamp(0, 100) * u16::MAX as i64 / 100) as u16
+}
+
+/// Target position in ms for `level` in seconds (relative to the extrapolated position).
+pub fn seek(level: Level, np: &NowPlaying, now_ms: u64) -> u32 {
     let current = np.position(now_ms) as i64;
     // Relative to the position in seconds, so sub-second precision survives.
-    let target = level("position", seconds, current / 1000)? * 1000 + if seconds.starts_with(['+', '-']) { current % 1000 } else { 0 };
-    Ok(target.clamp(0, np.duration_ms as i64) as u32)
+    let target = level.apply(current / 1000) * 1000 + if matches!(level, Level::Relative(_)) { current % 1000 } else { 0 };
+    target.clamp(0, np.duration_ms as i64) as u32
 }
 
 fn percent(volume: u16) -> u32 {
@@ -381,28 +414,33 @@ fn percent(volume: u16) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{seek, spotify_uri, volume};
+    use super::{Level, seek, spotify_uri, volume};
     use crate::proto::NowPlaying;
+
+    fn l(s: &str) -> Level {
+        Level::parse("test", s).unwrap()
+    }
 
     #[test]
     fn volume_levels() {
-        assert_eq!(volume("100", 0).unwrap(), u16::MAX);
-        assert_eq!(volume("0", u16::MAX).unwrap(), 0);
-        assert_eq!(volume("+5", volume("40", 0).unwrap()).unwrap(), volume("45", 0).unwrap());
-        assert_eq!(volume("-50", volume("40", 0).unwrap()).unwrap(), 0);
-        assert_eq!(volume("+500", 0).unwrap(), u16::MAX);
-        assert!(volume("loud", 0).is_err());
+        assert_eq!(volume(l("100"), 0), u16::MAX);
+        assert_eq!(volume(l("0"), u16::MAX), 0);
+        assert_eq!(volume(l("+5"), volume(l("40"), 0)), volume(l("45"), 0));
+        assert_eq!(volume(l("-50"), volume(l("40"), 0)), 0);
+        assert_eq!(volume(l("+500"), 0), u16::MAX);
+        assert!(Level::parse("volume", "loud").is_err());
+        assert!(Level::parse("volume", "-").is_err());
     }
 
     #[test]
     fn seek_positions() {
         let np = NowPlaying { duration_ms: 200_000, position_ms: 60_000, position_at_ms: 1_000, playing: true, ..Default::default() };
-        assert_eq!(seek("30", &np, 5_000).unwrap(), 30_000);
-        assert_eq!(seek("+10", &np, 5_000).unwrap(), 74_000);
-        assert_eq!(seek("-10", &NowPlaying { playing: false, ..np.clone() }, 5_000).unwrap(), 50_000);
-        assert_eq!(seek("-100", &np, 5_000).unwrap(), 0);
-        assert_eq!(seek("999", &np, 5_000).unwrap(), 200_000);
-        assert!(seek("1:30", &np, 5_000).is_err());
+        assert_eq!(seek(l("30"), &np, 5_000), 30_000);
+        assert_eq!(seek(l("+10"), &np, 5_000), 74_000);
+        assert_eq!(seek(l("-10"), &NowPlaying { playing: false, ..np.clone() }, 5_000), 50_000);
+        assert_eq!(seek(l("-100"), &np, 5_000), 0);
+        assert_eq!(seek(l("999"), &np, 5_000), 200_000);
+        assert!(Level::parse("position", "1:30").is_err());
     }
 
     #[test]

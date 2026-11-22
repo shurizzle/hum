@@ -1,5 +1,6 @@
 mod draw;
 mod images;
+pub mod keys;
 
 use std::time::{Duration, Instant};
 
@@ -17,8 +18,10 @@ use tokio::{sync::mpsc, task::AbortHandle};
 
 use crate::{
     api::{Api, Item},
+    cli::{self, OnOff},
     proto::{self, Cmd, Conn, Msg, NowPlaying},
 };
+use keys::{Action, Dir, Keymap, LikeTarget, PlayTarget, QueueTarget, Set, Step, Toggle, Vertical};
 use images::{Done, Images};
 
 const TOKEN_REFRESH: Duration = Duration::from_secs(30 * 60);
@@ -26,8 +29,6 @@ const TOKEN_REFRESH: Duration = Duration::from_secs(30 * 60);
 const QUEUE_LEN: usize = 20;
 /// Synced lyrics follow the song again this long after a manual scroll.
 pub const LYRICS_FOLLOW: Duration = Duration::from_secs(5);
-const VOLUME_STEP: u16 = u16::MAX / 20;
-const SEEK_STEP: u32 = 10_000;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Kind {
@@ -109,6 +110,13 @@ impl Page {
             self.sel = (s + 1, self.secs[s + 1].entry(true));
         } else if !down && s > 0 {
             self.sel = (s - 1, self.secs[s - 1].entry(false));
+        }
+    }
+
+    /// To the first or last section, landing like `vertical` does (`gg` / `G`).
+    fn edge(&mut self, last: bool) {
+        if let Some(s) = if last { self.secs.len().checked_sub(1) } else { (!self.secs.is_empty()).then_some(0) } {
+            self.sel = (s, self.secs[s].entry(!last));
         }
     }
 
@@ -243,9 +251,13 @@ pub struct App {
     quit: bool,
     /// Startup found no playing context; open it if the daemon reports one before the user acts.
     resume_pending: bool,
+    pub keymap: Keymap,
+    /// Keys of a sequence typed so far, and when it stops waiting for more.
+    pending: Vec<keys::Key>,
+    key_deadline: Option<tokio::time::Instant>,
 }
 
-pub async fn run(mut conn: Conn) -> Result<()> {
+pub async fn run(mut conn: Conn, keymap: Keymap) -> Result<()> {
     proto::send(&mut conn, &Cmd::Token).await?;
     let mut np = NowPlaying::default();
     let tokens = loop {
@@ -301,6 +313,9 @@ pub async fn run(mut conn: Conn) -> Result<()> {
         hits: vec![],
         quit: false,
         resume_pending: false,
+        keymap,
+        pending: vec![],
+        key_deadline: None,
     };
     // Resume like the desktop app: the playing context, else the last page, else home.
     let playing = Some(Item::from_context(&app.np.context)).filter(Item::browsable);
@@ -450,6 +465,7 @@ async fn event_loop(
                 app.images.done(done);
                 vec![]
             }
+            _ = tokio::time::sleep_until(app.key_deadline.unwrap_or_else(tokio::time::Instant::now)), if app.key_deadline.is_some() => app.key_timeout(),
             _ = refresh.tick() => vec![Cmd::Token],
             _ = redraw.tick() => vec![],
         };
@@ -824,53 +840,120 @@ impl App {
             }
             return vec![];
         }
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let k = keys::key(key);
+        if self.pending.is_empty() || k != (KeyCode::Esc, KeyModifiers::NONE) {
+            self.pending.push(k);
+        } else {
+            // Like vim: Esc cancels a pending sequence.
+            self.pending.clear();
+        }
+        let mut cmds = vec![];
+        self.key_deadline = None;
+        while !self.pending.is_empty() {
+            match self.keymap.lookup(&self.pending) {
+                keys::Lookup::Prefix(_) => {
+                    self.key_deadline = self.keymap.timeout.map(|t| tokio::time::Instant::now() + t);
+                    break;
+                }
+                keys::Lookup::Exact(actions) => {
+                    let actions = actions.to_vec();
+                    self.pending.clear();
+                    self.run_actions(&actions, &mut cmds);
+                }
+                // Not a sequence: what came before runs on its own if bound, then the last key alone.
+                keys::Lookup::None => {
+                    let last = self.pending.pop().expect("not empty");
+                    if !self.pending.is_empty() {
+                        if let keys::Lookup::Exact(a) | keys::Lookup::Prefix(Some(a)) = self.keymap.lookup(&self.pending) {
+                            let a = a.to_vec();
+                            self.run_actions(&a, &mut cmds);
+                        }
+                        self.pending = vec![last];
+                    }
+                }
+            }
+        }
+        cmds
+    }
+
+    /// The pending sequence timed out: it runs what it is bound to, if anything.
+    fn key_timeout(&mut self) -> Vec<Cmd> {
+        self.key_deadline = None;
+        let mut cmds = vec![];
+        if let keys::Lookup::Prefix(Some(a)) | keys::Lookup::Exact(a) = self.keymap.lookup(&std::mem::take(&mut self.pending)) {
+            let a = a.to_vec();
+            self.run_actions(&a, &mut cmds);
+        }
+        cmds
+    }
+
+    fn run_actions(&mut self, actions: &[Action], cmds: &mut Vec<Cmd>) {
+        for a in actions {
+            cmds.extend(self.action(a));
+        }
+    }
+
+    fn like_target(&self, t: LikeTarget) -> Option<String> {
+        match t {
+            LikeTarget::Playing => Some(self.np.uri.clone()).filter(|u| !u.is_empty()),
+            LikeTarget::Selected => self.selected().map(|i| i.uri),
+        }
+    }
+
+    fn action(&mut self, a: &Action) -> Option<Cmd> {
         let main = self.focus == Focus::Main;
         let queue = self.focus == Focus::Queue;
-        match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
-            KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('Q') => {
+        match a {
+            Action::Nop => {}
+            Action::Quit => self.quit = true,
+            Action::Kill => {
                 self.quit = true;
-                return vec![Cmd::Shutdown];
+                return Some(Cmd::Shutdown);
             }
-            KeyCode::Tab => self.cycle_focus(true),
-            KeyCode::BackTab => self.cycle_focus(false),
-            KeyCode::Char('/') => self.search = Some(String::new()),
-            KeyCode::Char('g') => self.home(),
-            KeyCode::Char(']') => self.toggle_queue(),
-            KeyCode::Char('[') => self.toggle_library(),
-            KeyCode::Char('?') => self.help = true,
-            KeyCode::Char('c') => self.open_devices(),
-            KeyCode::Char('y') => self.toggle_lyrics(),
-            KeyCode::Char('j') | KeyCode::Down if main && self.show_lyrics => self.scroll_lyrics(1),
-            KeyCode::Char('k') | KeyCode::Up if main && self.show_lyrics => self.scroll_lyrics(-1),
-            KeyCode::Esc if self.show_lyrics => self.show_lyrics = false,
-            KeyCode::Esc | KeyCode::Backspace => self.back(),
-            KeyCode::Right if shift => return vec![Cmd::Seek(self.position() + SEEK_STEP)],
-            KeyCode::Char('L') => return vec![Cmd::Seek(self.position() + SEEK_STEP)],
-            KeyCode::Left if shift => return vec![Cmd::Seek(self.position().saturating_sub(SEEK_STEP))],
-            KeyCode::Char('H') => return vec![Cmd::Seek(self.position().saturating_sub(SEEK_STEP))],
-            KeyCode::Char('j') | KeyCode::Down if main => self.stack.last_mut().into_iter().for_each(|p| p.vertical(true)),
-            KeyCode::Char('k') | KeyCode::Up if main => self.stack.last_mut().into_iter().for_each(|p| p.vertical(false)),
-            KeyCode::Char('l') | KeyCode::Right if main => self.stack.last_mut().into_iter().for_each(|p| p.horizontal(true)),
-            KeyCode::Char('h') | KeyCode::Left if main => self.stack.last_mut().into_iter().for_each(|p| p.horizontal(false)),
-            KeyCode::Char('j') | KeyCode::Down if queue => self.move_queue(true),
-            KeyCode::Char('k') | KeyCode::Up if queue => self.move_queue(false),
-            KeyCode::Char('h') | KeyCode::Left if queue => self.focus = Focus::Main,
-            KeyCode::Char('l') | KeyCode::Right if queue => {}
-            KeyCode::Char('J') | KeyCode::Char('K') if queue => {
-                let down = key.code == KeyCode::Char('J');
+            Action::Focus(step) => self.cycle_focus(*step == Step::Next),
+            Action::Search => self.search = Some(String::new()),
+            Action::Home => self.home(),
+            Action::Help => self.help = true,
+            Action::Devices => self.open_devices(),
+            Action::Toggle(Toggle::Queue) => self.toggle_queue(),
+            Action::Toggle(Toggle::Library) => self.toggle_library(),
+            Action::Toggle(Toggle::Lyrics) => self.toggle_lyrics(),
+            Action::Select(d @ (Dir::Down | Dir::Up)) if main && self.show_lyrics => self.scroll_lyrics(if *d == Dir::Down { 1 } else { -1 }),
+            Action::Select(d @ (Dir::First | Dir::Last)) if main && self.show_lyrics => {
+                self.scroll_lyrics(if *d == Dir::Last { isize::MAX } else { isize::MIN });
+            }
+            Action::Back if self.show_lyrics => self.show_lyrics = false,
+            Action::Back => self.back(),
+            Action::Select(d) if main => {
+                if let Some(p) = self.stack.last_mut() {
+                    match d {
+                        Dir::Down | Dir::Up => p.vertical(*d == Dir::Down),
+                        Dir::Left | Dir::Right => p.horizontal(*d == Dir::Right),
+                        Dir::First | Dir::Last => p.edge(*d == Dir::Last),
+                    }
+                }
+            }
+            Action::Select(d @ (Dir::Down | Dir::Up)) if queue => self.move_queue(*d == Dir::Down),
+            Action::Select(Dir::First) if queue => self.queue_sel = 0,
+            Action::Select(Dir::Last) if queue => self.queue_sel = self.queue.len().saturating_sub(1),
+            Action::Select(Dir::First) => self.lib_sel = 0,
+            Action::Select(Dir::Last) => self.lib_sel = self.library.len().saturating_sub(1),
+            Action::Select(Dir::Left) if queue => self.focus = Focus::Main,
+            Action::Select(d @ (Dir::Down | Dir::Up)) => self.move_library(*d == Dir::Down),
+            Action::Select(Dir::Right) if !queue => self.focus = Focus::Main,
+            Action::Select(Dir::Left | Dir::Right) => {}
+            Action::Move(v) if queue => {
+                let down = *v == Vertical::Down;
                 let (i, j) = (self.queue_sel, if down { self.queue_sel + 1 } else { self.queue_sel.wrapping_sub(1) });
                 if let (Some(item), true) = (self.queue.get(i).cloned(), j < self.queue.len()) {
                     let nth = self.queue[..i].iter().filter(|q| q.uri == item.uri).count();
                     // Shown moved at once; the cluster update confirms it (an error restores it).
                     self.queue.swap(i, j);
                     self.queue_sel = j;
-                    return vec![Cmd::MoveQueue { uri: item.uri, nth, down }];
+                    return Some(Cmd::MoveQueue { uri: item.uri, nth, down });
                 }
             }
-            KeyCode::Char('d') | KeyCode::Delete if queue => {
+            Action::Unqueue if queue => {
                 if let Some(item) = self.queue.get(self.queue_sel).cloned() {
                     // Occurrence among equal uris before it: the same track can be queued twice.
                     let nth = self.queue[..self.queue_sel].iter().filter(|i| i.uri == item.uri).count();
@@ -878,58 +961,65 @@ impl App {
                     self.queue.remove(self.queue_sel);
                     self.queue_sel = self.queue_sel.min(self.queue.len().saturating_sub(1));
                     self.status = format!("Removed from queue: {}", item.name);
-                    return vec![Cmd::Unqueue { uri: item.uri, nth }];
+                    return Some(Cmd::Unqueue { uri: item.uri, nth });
                 }
             }
-            KeyCode::Char('j') | KeyCode::Down => self.move_library(true),
-            KeyCode::Char('k') | KeyCode::Up => self.move_library(false),
-            KeyCode::Char('l') | KeyCode::Right => self.focus = Focus::Main,
-            KeyCode::Enter => {
+            Action::Move(_) | Action::Unqueue => {}
+            Action::Open => {
                 if let Some(item) = self.selected() {
                     let context = self.context();
-                    return self.activate(item, context);
+                    let cmds = self.activate(item, context);
+                    self.outbox.extend(cmds);
                 }
             }
-            KeyCode::Char('p') => {
-                if let Some(item) = self.selected() {
-                    return vec![play_context(item.uri)];
-                }
-            }
-            KeyCode::Char('P') => {
-                if let Some(context) = self.page().and_then(|p| p.context.clone()) {
-                    return vec![play_context(context)];
-                }
-            }
-            KeyCode::Char('a') => {
+            Action::Play(PlayTarget::Selected) => return self.selected().map(|item| play_context(item.uri)),
+            Action::Play(PlayTarget::Page) => return self.page().and_then(|p| p.context.clone()).map(play_context),
+            Action::Queue(QueueTarget::Selected) => {
                 if let Some(item) = self.selected().filter(|i| matches!(i.kind(), "track" | "episode")) {
                     // Failures come back as `Msg::Error` and replace this.
                     self.status = format!("Added to queue: {}", item.name);
-                    return vec![Cmd::Queue(item.uri)];
+                    return Some(Cmd::Queue(item.uri));
                 }
             }
-            KeyCode::Char('f') => {
-                if let Some(item) = self.selected() {
-                    self.toggle_like(item.uri);
-                }
+            Action::Play(PlayTarget::Uri(uri)) => return Some(cli::play(uri)),
+            Action::Queue(QueueTarget::Uri(uri)) => return Some(Cmd::Queue(cli::spotify_uri(uri))),
+            Action::Next => return Some(Cmd::Next),
+            Action::Prev => return Some(Cmd::Prev),
+            Action::Toggle(Toggle::Play) => return Some(Cmd::PlayPause),
+            Action::Set(Set::Play(on)) => return (bool::from(*on) != self.np.playing).then_some(Cmd::PlayPause),
+            Action::Toggle(Toggle::Shuffle) => return self.action(&Action::Set(Set::Shuffle(if self.shuffle { OnOff::Off } else { OnOff::On }))),
+            Action::Set(Set::Shuffle(on)) => {
+                self.shuffle = (*on).into();
+                return Some(Cmd::Shuffle(self.shuffle));
             }
-            KeyCode::Char('F') if !self.np.uri.is_empty() => self.toggle_like(self.np.uri.clone()),
-            KeyCode::Char(' ') => return vec![Cmd::PlayPause],
-            KeyCode::Char('n') => return vec![Cmd::Next],
-            KeyCode::Char('b') => return vec![Cmd::Prev],
-            KeyCode::Char('+' | '=') => return vec![Cmd::Volume(self.np.volume.saturating_add(VOLUME_STEP))],
-            KeyCode::Char('-') => return vec![Cmd::Volume(self.np.volume.saturating_sub(VOLUME_STEP))],
-            KeyCode::Char('m') => return vec![Cmd::Mute(!self.np.muted)],
-            KeyCode::Char('s') => {
-                self.shuffle = !self.shuffle;
-                return vec![Cmd::Shuffle(self.shuffle)];
+            Action::Toggle(Toggle::Repeat) => {
+                self.repeat = if self.repeat == proto::Repeat::Off { proto::Repeat::Context } else { proto::Repeat::Off };
+                return Some(Cmd::Repeat(self.repeat));
             }
-            KeyCode::Char('r') => {
+            Action::Cycle(cli::Cycle::Repeat) => {
                 self.repeat = self.repeat.cycle();
-                return vec![Cmd::Repeat(self.repeat)];
+                return Some(Cmd::Repeat(self.repeat));
             }
-            _ => {}
+            Action::Set(Set::Repeat(r)) => {
+                self.repeat = (*r).into();
+                return Some(Cmd::Repeat(self.repeat));
+            }
+            Action::Toggle(Toggle::Like(t)) => {
+                if let Some(uri) = self.like_target(*t) {
+                    self.toggle_like(uri);
+                }
+            }
+            Action::Set(Set::Like(t, on)) => {
+                if let Some(uri) = self.like_target(*t).filter(|uri| self.liked(uri) == Some(!bool::from(*on))) {
+                    self.toggle_like(uri);
+                }
+            }
+            Action::Toggle(Toggle::Mute) => return Some(Cmd::Mute(!self.np.muted)),
+            Action::Set(Set::Mute(on)) => return Some(Cmd::Mute((*on).into())),
+            Action::Set(Set::Volume(v)) => return Some(Cmd::Volume(cli::volume(*v, self.np.volume))),
+            Action::Set(Set::Position(p)) => return Some(Cmd::Seek(cli::seek(*p, &self.np, proto::now_ms()))),
         }
-        vec![]
+        None
     }
 
     fn mouse(&mut self, m: MouseEvent) -> Vec<Cmd> {

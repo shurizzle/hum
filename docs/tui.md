@@ -75,14 +75,17 @@ get their title and cover from the first response (`Api::open` returns the root 
 
 ## Keys
 
+Defaults below; all of them can be rebound in `config.ron` ([docs/config.md](config.md)).
+
 | Key | Action |
 |---|---|
 | `h j k l` / arrows | Move (shelves scroll horizontally) |
+| `gg` / `G` | First / last item of the focused panel (lyrics: top / bottom) |
 | `Tab` / `Shift+Tab` | Cycle focus library → main → queue |
 | `Enter` | Open playlist/album/artist, play track |
 | `Esc` / `Backspace` | Cancel loading, go back |
 | `/` | Search |
-| `g` | Home |
+| `gh` | Home |
 | `Space` | Play/pause |
 | `n` / `b` | Next / previous |
 | `H` / `L`, `Shift+←/→` | Seek ∓10 s |
@@ -99,7 +102,7 @@ get their title and cover from the first response (`Api::open` returns the root 
 | `[` / `]` | Toggle library / now-playing panel |
 | `c` | Connect device picker |
 | `y` | Toggle lyrics |
-| `?` | Key help overlay (`draw::KEYS`); any key or click closes it |
+| `?` | Key help overlay, generated from the keymap in effect (`Keymap::help`); any key or click closes it |
 | `q` | Quit client (music keeps playing) |
 | `Q` | Quit and stop the daemon |
 

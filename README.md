@@ -76,6 +76,7 @@ hum play URI|LINK                   # track/album/playlist/artist; open.spotify.
 hum next | prev
 hum queue URI|LINK
 hum toggle play|shuffle|repeat|like|mute
+hum cycle repeat                    # off → on → track
 hum set play|shuffle|like|mute on|off
 hum set repeat off|on|track         # on = repeat the context
 hum set volume 40                   # percent; +5 / -5 relative
@@ -89,11 +90,12 @@ hum completions zsh|bash|fish|...   # shell completion script
 
 ## Keys
 
-`hjkl`/arrows move · `Enter` open/play · `Esc` back · `/` search · `g` home · `Space` play/pause ·
+`hjkl`/arrows move · `gg`/`G` first/last · `Enter` open/play · `Esc` back · `/` search · `gh` home · `Space` play/pause ·
 `n`/`b` next/previous · `Shift+←/→` seek · `+`/`-` volume · `m` mute · `s` shuffle · `r` repeat ·
 `a` add to queue · `f`/`F` like selected/playing · `[` / `]` library / now-playing panel · `c` pick device · `y` lyrics · `?` all keys · `q` quit · `Q` quit and stop the daemon.
 
-Full reference: [docs/tui.md](docs/tui.md).
+Full reference: [docs/tui.md](docs/tui.md). Keys are vim-style and rebindable in `config.ron`
+(sequences, lists of actions modelled on the CLI): [docs/config.md](docs/config.md).
 
 ## Cache
 
@@ -109,6 +111,7 @@ reset it.
 - [docs/playback.md](docs/playback.md)
 - [docs/spotify-apis.md](docs/spotify-apis.md)
 - [docs/tui.md](docs/tui.md)
+- [docs/config.md](docs/config.md)
 - [docs/known-issues.md](docs/known-issues.md)
 
 ## Disclaimer

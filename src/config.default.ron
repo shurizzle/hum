@@ -1,0 +1,63 @@
+// hum default configuration. `~/.config/hum/config.ron` (macOS: `~/Library/Application Support/hum/config.ron`)
+// uses the same format; every field is optional. Reference: docs/config.md.
+(
+    keymap: (
+        // `Merge`: `keys` below override these defaults (`Nop` or `[]` unbinds one).
+        // `Replace`: only `keys` below are bound.
+        mode: Merge,
+        // Milliseconds to wait for the next key when a sequence is also the prefix of a longer one
+        // (`g` and `gg`); `None` waits forever.
+        timeout: 1000,
+        keys: {
+            "<C-c>": Quit,
+            "q": Quit,
+            "Q": Kill,
+            "<Tab>": Focus(Next),
+            "<S-Tab>": Focus(Prev),
+            "/": Search,
+            "gh": Home,
+            "?": Help,
+            "c": Devices,
+            "[": Toggle(Library),
+            "]": Toggle(Queue),
+            "y": Toggle(Lyrics),
+
+            "j": Select(Down),
+            "<Down>": Select(Down),
+            "k": Select(Up),
+            "<Up>": Select(Up),
+            "h": Select(Left),
+            "<Left>": Select(Left),
+            "l": Select(Right),
+            "<Right>": Select(Right),
+            "gg": Select(First),
+            "G": Select(Last),
+            "<Esc>": Back,
+            "<BS>": Back,
+            "<CR>": Open,
+            "p": Play(Selected),
+            "P": Play(Page),
+            "a": Queue(Selected),
+            "f": Toggle(Like(Selected)),
+            "d": Unqueue,
+            "<Del>": Unqueue,
+            "J": Move(Down),
+            "K": Move(Up),
+
+            "<Space>": Toggle(Play),
+            "n": Next,
+            "b": Prev,
+            "L": Set(Position(Relative(10))),
+            "<S-Right>": Set(Position(Relative(10))),
+            "H": Set(Position(Relative(-10))),
+            "<S-Left>": Set(Position(Relative(-10))),
+            "+": Set(Volume(Relative(5))),
+            "=": Set(Volume(Relative(5))),
+            "-": Set(Volume(Relative(-5))),
+            "m": Toggle(Mute),
+            "s": Toggle(Shuffle),
+            "r": Cycle(Repeat),
+            "F": Toggle(Like(Playing)),
+        },
+    ),
+)

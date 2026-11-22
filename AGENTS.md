@@ -14,6 +14,7 @@ must update the docs **in the same change**:
 - `docs/playback.md` — player engine, its stdin/stdout protocol, ECS setup and signing, logins.
 - `docs/spotify-apis.md` — auth, pathfinder operations/variables, Web API, hash scraping, parsing.
 - `docs/tui.md` — layout, keys, mouse, covers, rendering rules.
+- `docs/config.md` — `config.ron` format, keymap, key notation, actions.
 - `docs/known-issues.md` — open problems, workarounds, decisions not to pursue something.
 - `README.md` — user-facing usage, install, keys summary.
 - `AGENTS.md` — this file, when workflow or conventions change.
@@ -25,6 +26,7 @@ Do not finish a task with docs out of date.
 ```
 src/main.rs        entry and clap parsing: `hum`, `hum kill`, `hum daemon`, remote subcommands
 src/cli.rs         remote-control subcommands (play, toggle, set, get, devices, ...)
+src/config.rs      `config.ron` loading; defaults in src/config.default.ron
 src/proto.rs       IPC types and framing
 src/daemon.rs      librespot session (tokens), socket server, command dispatch, log forwarding
 src/player.rs      supervised player child (ECS or Soloist), Web API calls for its device
@@ -38,6 +40,7 @@ src/cache.rs       persistent LMDB cache (albums, artists, track metadata, cover
 src/api.rs         pathfinder client, hash scraping, JSON item extraction
 src/meta.rs        track metadata via spclient extended-metadata (daemon side)
 src/tui/mod.rs     app state, input, cancellable fetches
+src/tui/keys.rs    keymap: vim key notation, sequences with timeout, actions
 src/tui/draw.rs    Spotify-like layout and rendering
 src/tui/images.rs  async cover pipeline
 .github/workflows/ecs.yml    publishes signed Electron as `ecs-<castLabs tag>` releases

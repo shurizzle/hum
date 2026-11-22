@@ -2,6 +2,7 @@ mod api;
 mod auth;
 mod cache;
 mod cli;
+mod config;
 mod daemon;
 mod media;
 mod meta;
@@ -12,7 +13,7 @@ mod soloist;
 mod spawn;
 mod tui;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 
 /// Terminal Spotify client. Without a subcommand, opens the TUI.
@@ -67,8 +68,10 @@ fn main() -> Result<()> {
 async fn run(args: Args) -> Result<()> {
     match args.cmd {
         None => {
+            // Before login, so a bad config fails at once.
+            let keymap = tui::keys::Keymap::new(&config::load()?.keymap).context("config.ron")?;
             auth::ensure_login().await?;
-            tui::run(spawn::connect().await?).await
+            tui::run(spawn::connect().await?, keymap).await
         }
         Some(Sub::Start) => {
             auth::ensure_login().await?;
