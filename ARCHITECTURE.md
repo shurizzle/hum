@@ -12,7 +12,8 @@ client (TUI) and the server (daemon).
                          ├── Mirror: own librespot Session, Connect cluster (dealer), set_queue
                          └── player child: Spotify Soloist (WebSocket API) or, with the `ecs`
                              feature, castLabs Electron + Web Playback SDK (Widevine);
-                             Spotify Connect device "hum", driven via it + Web API
+                             Spotify Connect device "hum", driven via it + Connect commands
+                             (Soloist) or the Web API (ECS)
 ```
 
 ## Responsibilities
@@ -21,7 +22,7 @@ client (TUI) and the server (daemon).
 |---|---|---|
 | Lifetime | Spawned on demand, survives all clients | One per terminal |
 | Owns | librespot session, player process, playback state | Navigation, views, selection, cover cache |
-| Network | Spotify AP (login, metadata, Connect), Web API (play/shuffle/repeat/queue/transfer); audio via the player | pathfinder, cover images |
+| Network | Spotify AP (login, metadata, Connect), Connect commands (Soloist) or Web API (ECS) for play/shuffle/repeat/queue/transfer; audio via the player | pathfinder, spclient rootlist, cover images |
 | Talks to | Clients via IPC | Daemon via IPC, Spotify via HTTP |
 
 Only playback is shared. Everything else is per-client: two TUIs can browse different pages while
@@ -39,7 +40,7 @@ both see the same now-playing state.
   connection gets the current snapshot, then each change.
 - Follows the account's Connect cluster over the librespot dealer (hidden observer device): restores
   the last playback on startup and mirrors playback on other devices into `NowPlaying`, routing
-  controls to them through the Web API. See [docs/playback.md](docs/playback.md).
+  controls to them (Connect commands with Soloist, Web API with ECS). See [docs/playback.md](docs/playback.md).
 - With the Soloist engine, publishes OS media controls itself (MPRIS on Linux, Now Playing on
   macOS; `src/media/`); ECS gets them from Chromium. On macOS the daemon's main thread serves the
   main run loop and tokio runs on another thread. See [docs/playback.md](docs/playback.md).
@@ -81,7 +82,7 @@ both see the same now-playing state.
 ## Client
 
 - `src/tui/`. Gets tokens from the daemon (`Cmd::Token`, refreshed every 30 min): login5 + client
-  token for pathfinder, web token for the Web API. It calls Spotify itself. The daemon never proxies browsing data.
+  token for pathfinder, user id for the playlist rootlist. It calls Spotify itself. The daemon never proxies browsing data.
 - One `tokio::select!` loop: terminal events, daemon messages, background fetch results, image
   results, timers. UI responsiveness has priority: all network and image work runs in tasks and
   reports back over channels; nothing blocks the loop.
@@ -95,7 +96,7 @@ both see the same now-playing state.
 | Path (macOS) | Content |
 |---|---|
 | `~/Library/Application Support/hum/credentials.json` | Stored librespot credentials |
-| `~/Library/Application Support/hum/web-token.json` | hum developer app token + refresh token |
+| `~/Library/Application Support/hum/web-token.json` | hum developer app token + refresh token (ECS only) |
 | `~/Library/Application Support/hum/last-page.json` | Last open playlist/album/artist (client resume) |
 | `~/Library/Application Support/hum/ecs/` (Linux: `$XDG_DATA_HOME/hum/ecs/`) | castLabs Electron (`ecs` feature), installed automatically before the first daemon start (`setup::ensure_ecs`); `VERSION` holds the installed `ECS_VERSION` |
 | `~/Library/Application Support/hum/soloist-key` (Linux: `$XDG_CONFIG_HOME/hum/soloist-key`) | Spotify Soloist developer API key, written after pairing; its presence selects the Soloist engine (`src/soloist.rs`, [docs/playback.md](docs/playback.md)) |

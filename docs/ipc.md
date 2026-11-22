@@ -15,13 +15,13 @@ Defined in `src/proto.rs`.
 | `Seek(ms)` | Player seek |
 | `Volume(u16)` | 0..=65535; unmutes first when muted |
 | `Mute(bool)` | Silence playback keeping `volume` (see [playback.md](playback.md)); no-op while another device plays |
-| `Shuffle(bool)`, `Repeat(Repeat)` | Web API; `Repeat` is `"off"`, `"context"` or `"track"` |
-| `Queue(uri)` | `POST /me/player/queue` on the active device; with none active, first transfers playback to hum paused (`Player::activate`), retrying while the transfer registers |
+| `Shuffle(bool)`, `Repeat(Repeat)` | Web API (ECS) or Connect commands (Soloist); `Repeat` is `"off"`, `"context"` or `"track"` |
+| `Queue(uri)` | Queue on the active device (`POST /me/player/queue`, or Connect `add_to_queue`); with none active, first transfers playback to hum paused (`Player::activate`), retrying while the transfer registers |
 | `Unqueue { uri, nth }` | Remove the `nth` (0-based) occurrence of `uri` in `NowPlaying.next` via a Connect `set_queue` command |
 | `MoveQueue { uri, nth, down }` | Swap that track with the next/previous shown one via `set_queue`; each slot keeps its provider (queue/context) |
 | `Lyrics(uri)` | Reply with `Msg::Lyrics { uri, lines }` (`LyricsLine { start_ms, words }`, empty when the track has none) |
-| `Devices` | Reply with `Msg::Devices`: the account's Connect devices (`GET /me/player/devices`; the cluster omits the SDK's own device) |
-| `Transfer(id)` | `PUT /me/player {device_ids: [id], play}`, keeping the current play/pause state |
+| `Devices` | Reply with `Msg::Devices`: the account's Connect devices (ECS: `GET /me/player/devices`, the cluster omits the SDK's own device; Soloist: the cluster's) |
+| `Transfer(id)` | Move playback there keeping the current play/pause state (`PUT /me/player`, or Connect transfer) |
 | `Tracks(uris)` | Reply with `Msg::Tracks`: track metadata as `Item`s, request order, unknown skipped |
 | `Token` | Reply with `Msg::Tokens` |
 | `Shutdown` | Stop the daemon |
@@ -41,7 +41,7 @@ Commands on a connection are handled in order, and the daemon closes it on EOF. 
 | `Tracks(Vec<Item>)` | Reply to `Cmd::Tracks` |
 | `Lyrics { uri, lines }` | Reply to `Cmd::Lyrics` |
 | `Devices(Vec<Device>)` | Reply to `Cmd::Devices`; `Device { id, name, kind, active }` |
-| `Tokens { access_token, client_token, web_token }` | Reply to `Cmd::Token`. `access_token`/`client_token`: librespot session (pathfinder). `web_token`: hum developer app (Web API). |
+| `Tokens { access_token, client_token, user }` | Reply to `Cmd::Token`. `access_token`/`client_token`: librespot session (pathfinder, spclient). `user`: the session's canonical user id (rootlist path). |
 | `Library` | Your Library or liked songs changed (any device); clients reload the library and the hearts on screen |
 | `Playlist(uri)` | That playlist's contents changed (any device); clients reload it if open |
 | `Error(String)` | Failure of the command this connection sent |

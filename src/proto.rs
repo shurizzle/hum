@@ -47,8 +47,8 @@ pub struct Tokens {
     /// login5 token of the librespot session: internal APIs (pathfinder).
     pub access_token: String,
     pub client_token: String,
-    /// Token of hum's developer app: public Web API.
-    pub web_token: String,
+    /// Canonical user id of the session (rootlist path).
+    pub user: String,
 }
 
 /// One lyrics line; `start_ms` is 0 for every line of unsynced lyrics.
@@ -134,7 +134,7 @@ impl NowPlaying {
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// IPC protocol version, independent of the app version: bump it on any change to `Cmd`, `Msg` or
 /// the types they carry. A daemon speaking another one is replaced.
-pub const PROTOCOL: u32 = 0;
+pub const PROTOCOL: u32 = 1;
 
 /// Daemon -> client. Replies carry no id: a client sends one command at a time per reply it awaits.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

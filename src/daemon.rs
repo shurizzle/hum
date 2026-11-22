@@ -212,12 +212,15 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
         Cmd::Load { context_uri: None, tracks, track: None } if tracks.len() == 1 && tracks[0].starts_with("spotify:track:") => {
             let played = async {
                 let radio = crate::meta::radio(&shared.session, &tracks[0]).await?;
-                player.web("/me/player/play", Some(json!({"context_uri": radio, "offset": {"uri": tracks[0]}}))).await
+                // Connect silently stops on an offset missing from the context (the radio may open
+                // with another release of the seed), so there the radio plays from its start.
+                let offset = if player.connect() { Value::Null } else { json!({"uri": tracks[0]}) };
+                player.play(json!({"context_uri": radio, "offset": offset})).await
             };
             if let Err(e) = played.await {
                 // The radio may not start with its seed, or not exist: play the track alone.
                 log::warn!("radio for {}: {e:#}", tracks[0]);
-                player.web("/me/player/play", Some(json!({"uris": tracks}))).await?;
+                player.play(json!({"uris": tracks})).await?;
             }
         }
         Cmd::Load { context_uri, tracks, track } => {
@@ -228,21 +231,23 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
                 },
                 None => json!({"uris": tracks}),
             };
-            player.web("/me/player/play", Some(body)).await?;
+            player.play(body).await?;
         }
         // Another device is playing: control it like the official clients do, without taking over.
         Cmd::PlayPause if player.remote() => {
-            let path = if shared.state.borrow().playing { "/me/player/pause" } else { "/me/player/play" };
-            player.web_active(reqwest::Method::PUT, path).await?;
+            let (cmd, path) = if shared.state.borrow().playing { ("pause", "/me/player/pause") } else { ("resume", "/me/player/play") };
+            player.on_active(json!({"endpoint": cmd}), reqwest::Method::PUT, path).await?;
         }
-        Cmd::Next if player.remote() => player.web_active(reqwest::Method::POST, "/me/player/next").await?,
-        Cmd::Prev if player.remote() => player.web_active(reqwest::Method::POST, "/me/player/previous").await?,
-        Cmd::Seek(ms) if player.remote() => player.web_active(reqwest::Method::PUT, &format!("/me/player/seek?position_ms={ms}")).await?,
+        Cmd::Next if player.remote() => player.on_active(json!({"endpoint": "skip_next"}), reqwest::Method::POST, "/me/player/next").await?,
+        Cmd::Prev if player.remote() => player.on_active(json!({"endpoint": "skip_prev"}), reqwest::Method::POST, "/me/player/previous").await?,
+        Cmd::Seek(ms) if player.remote() => {
+            player.on_active(json!({"endpoint": "seek_to", "value": ms}), reqwest::Method::PUT, &format!("/me/player/seek?position_ms={ms}")).await?
+        }
         Cmd::PlayPause if !player.loaded() => {
             // Nothing loaded in the SDK yet: play the restored last playback from where it stopped.
             let np = shared.state.borrow().clone();
             if !np.uri.is_empty() {
-                player.web("/me/player/play", Some(player.resume_body(&np))).await?;
+                player.play(player.resume_body(&np)).await?;
             }
         }
         Cmd::PlayPause => player.command("toggle", Value::Null),
@@ -258,25 +263,32 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
         // The Web API cannot mute another device.
         Cmd::Mute(_) if player.remote() => {}
         Cmd::Mute(on) => player.command("mute", json!(on)),
-        Cmd::Shuffle(on) => player.web(&format!("/me/player/shuffle?state={on}"), None).await?,
+        Cmd::Shuffle(on) => {
+            player.here(&[json!({"endpoint": "set_shuffling_context", "value": on})], &format!("/me/player/shuffle?state={on}")).await?
+        }
         Cmd::Repeat(r) => {
-            let state = match r {
-                proto::Repeat::Off => "off",
-                proto::Repeat::Context => "context",
-                proto::Repeat::Track => "track",
+            let (state, context, track) = match r {
+                proto::Repeat::Off => ("off", false, false),
+                proto::Repeat::Context => ("context", true, false),
+                proto::Repeat::Track => ("track", true, true),
             };
-            player.web(&format!("/me/player/repeat?state={state}"), None).await?
+            let cmds = [
+                json!({"endpoint": "set_repeating_context", "value": context}),
+                json!({"endpoint": "set_repeating_track", "value": track}),
+            ];
+            player.here(&cmds, &format!("/me/player/repeat?state={state}")).await?
         }
         Cmd::Queue(uri) => {
-            // The Web API queues only on an active device ("NO_ACTIVE_DEVICE" otherwise).
+            // Queueing needs an active device ("NO_ACTIVE_DEVICE" from the Web API otherwise).
             let path = format!("/me/player/queue?uri={uri}");
+            let cmd = json!({"endpoint": "add_to_queue", "track": {"uri": uri, "metadata": {"is_queued": "true"}, "provider": "queue"}});
             if player.remote() || player.loaded() {
-                player.web_active(reqwest::Method::POST, &path).await?;
+                player.on_active(cmd, reqwest::Method::POST, &path).await?;
             } else {
                 player.activate().await?;
                 // The transfer takes a moment to register; until then the queue answers 404.
                 let mut tries = 0;
-                while let Err(e) = player.web_active(reqwest::Method::POST, &path).await {
+                while let Err(e) = player.on_active(cmd.clone(), reqwest::Method::POST, &path).await {
                     tries += 1;
                     if tries == 10 {
                         return Err(e);
@@ -303,8 +315,7 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
         Cmd::Token => {
             let access_token = shared.session.login5().auth_token().await?.access_token;
             let client_token = shared.session.spclient().client_token().await?;
-            let web_token = auth::web_token().await?;
-            return Ok(Some(Msg::Tokens(Tokens { access_token, client_token, web_token })));
+            return Ok(Some(Msg::Tokens(Tokens { access_token, client_token, user: shared.session.username() })));
         }
         Cmd::Shutdown => shared.shutdown.notify_one(),
     }

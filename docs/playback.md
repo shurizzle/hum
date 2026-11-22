@@ -84,10 +84,12 @@ chosen port from `<config>/soloist/ws.port`, and connects to `ws://127.0.0.1:<po
 (Soloist re-applies its level when play from idle activates its Connect device) is answered with
 `set_volume 0` again; `mute false`
   restores the kept level. A restart starts unmuted at the saved level.
-  Everything else (`Load`, `Shuffle`, `Repeat`, `Queue`, `Transfer`) goes through the Web API against
-  Soloist's Connect device, published to the device watch once `GET /me/player/devices` lists it. Its
-  id is read from `<data dir>/.device_id` (written by Soloist; equal to the zeroconf `getInfo`
-  `deviceID` and the Web API id); without that file the device is matched by name (`hum`). The `player::Mirror` still mirrors playback on other devices, as for ECS.
+  Everything else (`Load`, `Shuffle`, `Repeat`, `Queue`, `Transfer`, remote controls) goes through
+  Connect commands on spclient with the session token, not the Web API (`Player::connect`, see
+  [Connect commands](#connect-commands-soloist)), so Soloist needs no web token. Commands target
+  Soloist's Connect device, whose id is read from `<data dir>/.device_id` (written by Soloist; equal
+  to the zeroconf `getInfo` `deviceID` and the Web API id) and published to the device watch. The
+  `player::Mirror` still mirrors playback on other devices, as for ECS.
 - Exit `10` (expired build) and any other exit surface an error; `supervise` retries after 3 s.
 
 ### OS media controls (`src/media/`)
@@ -160,8 +162,9 @@ extrapolated while playing):
 - **Startup restore**: with no active device, the first cluster shows where the account left off,
   paused, like the official clients. The Web API has no position once no device is active.
 - **Remote playback**: when another device (web, phone) is active, `NowPlaying` mirrors it and
-  `Player::remote()` is set. `PlayPause`/`Next`/`Prev`/`Seek` then go to the Web API without a
-  `device_id`, controlling that device instead of taking playback over. The SDK's paused leftover
+  `Player::remote()` is set. `PlayPause`/`Next`/`Prev`/`Seek` then go to that device (Web API
+  without a `device_id` for ECS, Connect commands to the cluster's active device for Soloist),
+  controlling it instead of taking playback over. The SDK's paused leftover
   state is ignored meanwhile; an SDK report of playing means hum took over and clears `remote`.
 - When the SDK's own device is active, only `NowPlaying.next` comes from the cluster (autoplay fills
   the queue after the track starts); the SDK reports everything else directly.
@@ -178,7 +181,7 @@ session to the frame that owns the media player: the SDK's cross-origin iframe
 (`WebFrameMain.executeJavaScript`). Actions come back as `HUM_MEDIA {cmd, arg}` console messages
 and run as page commands, not through the daemon.
 
-Daemon commands map as follows: `Load` → `PUT /me/player/play?device_id=` (context + offset uri, or
+Daemon commands map as follows for ECS (Soloist: [Connect commands](#connect-commands-soloist)): `Load` → `PUT /me/player/play?device_id=` (context + offset uri, or
 uris; a single loose track plays as `{context_uri: <its Song Radio>, offset: {uri}}` via
 `meta::radio`, so related music follows like in the official clients, falling back to the track
 alone on any error), `Shuffle`/`Repeat` → `PUT /me/player/shuffle|repeat`,
@@ -195,6 +198,23 @@ context (`spotify:webapi` left by `uris` playback, ...) the track
 plays as an explicit `uris` list (`player::play_body`): alone when started from the TUI, followed by
 the cluster's `next_tracks` (max 100 items) when resuming the restored playback. The
 player exits when its stdin closes; the daemon kills it on drop.
+
+## Connect commands (Soloist)
+
+With Soloist, `Player` (`connect`) sends Connect commands over spclient with the daemon's session
+token: `POST /connect-state/v1/player/command/from/<daemon session device id>/to/<device>`, body
+`{"command": {"endpoint": ...}}`. The sender id need not be a registered device (measured).
+
+| Daemon command | Connect |
+|---|---|
+| `Load` | `play` with `context: {uri, url: "context://<uri>"}`, or `{pages: [{tracks: [{uri}]}]}` for a track list; `options.skip_to.track_uri`, `options.seek_to` (ms). `player::connect_play` converts the Web API play bodies |
+| loose track | its Song Radio from the start, no `skip_to`: Connect answers 200 and silently stops when `skip_to` names a track missing from the context (the radio may open with another release of the seed) |
+| `Shuffle` | `set_shuffling_context {value}` |
+| `Repeat` | `set_repeating_context {value}` + `set_repeating_track {value}` |
+| `Queue` | `add_to_queue {track: {uri, metadata: {is_queued: "true"}, provider: "queue"}}` to the active device |
+| remote `PlayPause`/`Next`/`Prev`/`Seek` | `pause`/`resume`, `skip_next`, `skip_prev`, `seek_to {value}` to the cluster's active device |
+| `Transfer` | `POST /connect-state/v1/connect/transfer/from/<id>/to/<device>` `{transfer_options: {restore_paused: "pause"\|"resume"}}` |
+| `Devices` | the cluster's non-hidden devices (`Cluster.device`), kept by `Mirror` |
 
 ## Setup
 
@@ -258,16 +278,19 @@ work unsigned; MPRIS (metadata, cover, PlayPause) still works headless, it goes 
 
 ## Authentication
 
-Two tokens, both from `src/auth.rs` (`ensure_login`), obtained by the first `hum` in the foreground:
+Tokens from `src/auth.rs` (`ensure_login`), obtained by the first `hum` in the foreground:
 
 - librespot session (keymaster client id): stored credentials → login5 token + client token for
   pathfinder browsing, spclient and the dealer.
-- hum developer app (`7bd5b13670b74564b1de554c858d469e`): `web-token.json` with refresh token and
-  granted scopes, used by the SDK and the Web API. If `WEB_SCOPES` gains a scope, the next `hum`
+- hum developer app (`7bd5b13670b74564b1de554c858d469e`), ECS only: `web-token.json` with refresh
+  token and granted scopes, used by the SDK and the Web API. Skipped when the engine is or will be
+  Soloist (`setup::soloist_next`), which runs on the session token alone. If `WEB_SCOPES` gains a scope, the next `hum`
   redoes this one.
 
-They cannot be merged: the access point refuses the developer app's token ("Bad credentials"),
-and the keymaster id gets 429 from the Web API and the SDK. Both are authorized in one browser tab
+They cannot be merged (measured 2026-11-22): the access point refuses the developer app's token
+("Bad credentials"), pathfinder answers it 403 ("Client/request not allowed") and spclient 403
+("RBAC: access denied"); the keymaster token gets 429 from the Web API on the first request
+(`/me`, `/me/player`, `/me/player/devices`) and from the SDK. When both are needed they are authorized in one browser tab
 with hum's own PKCE flow (`Flow`, `collect_codes`): a listener on `http://127.0.0.1:8898/login`
 answers the first app's code with a redirect to the second app's consent page, then shows "logged
 in". Each app asks for consent only the first time ever; later logins just bounce through.

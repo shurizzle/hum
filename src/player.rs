@@ -44,12 +44,17 @@ const VOLUME_KEY: &str = "volume";
 /// Keeps `PUT /me/player/play` bodies well under the Web API's size limit.
 const MAX_URIS: usize = 100;
 
-/// Handle to the playback engine: Spotify's Web Playback SDK in castLabs Electron (Widevine),
-/// run as a supervised child process.
+/// Handle to the playback engine (ECS or Soloist), run as a supervised child process.
 pub struct Player {
     tx: mpsc::UnboundedSender<Value>,
     device: watch::Receiver<Option<String>>,
     http: reqwest::Client,
+    /// The daemon's session: Connect commands and transfers are sent from it.
+    session: Session,
+    /// Soloist: playback is driven with Connect commands on the session token instead of the Web
+    /// API, so no web token is needed. ECS keeps the Web API (the SDK needs the web token anyway,
+    /// and the cluster does not list the SDK's device).
+    connect: bool,
     /// The SDK has a track loaded. Until then `NowPlaying` may hold the restored last playback.
     loaded: Arc<AtomicBool>,
     /// Another Connect device (web, phone) is the active one; `NowPlaying` mirrors it.
@@ -65,6 +70,7 @@ struct Latest {
     session: Session,
     active: String,
     state: PlayerState,
+    devices: Vec<proto::Device>,
 }
 
 /// castLabs Electron version hum is tested with. Signed builds come from this repo's
@@ -83,6 +89,7 @@ impl Player {
     pub fn spawn(state: watch::Sender<NowPlaying>, engine: crate::setup::Engine, session: Session) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (device_tx, device) = watch::channel(None);
+        let connect = matches!(engine, crate::setup::Engine::Soloist { .. });
         let loaded = Arc::new(AtomicBool::new(false));
         let state = Arc::new(state);
         let remote = Arc::default();
@@ -103,8 +110,13 @@ impl Player {
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         });
-        tokio::spawn(supervise(rx, device_tx, state, loaded.clone(), Arc::clone(&remote), engine, session));
-        Self { tx, device, http: reqwest::Client::new(), loaded, remote, cluster }
+        tokio::spawn(supervise(rx, device_tx, state, loaded.clone(), Arc::clone(&remote), engine, session.clone()));
+        Self { tx, device, http: reqwest::Client::new(), session, connect, loaded, remote, cluster }
+    }
+
+    /// Playback runs on Connect commands (Soloist), not the Web API.
+    pub fn connect(&self) -> bool {
+        self.connect
     }
 
     pub fn remote(&self) -> bool {
@@ -177,9 +189,57 @@ impl Player {
         self.transfer(&self.device().await?, false).await
     }
 
-    /// The account's Connect devices. The cluster lists only some (not the SDK's own device), so
-    /// this asks the Web API.
+    /// Sends a Connect command (`{"endpoint": ..., ...}`) to device `to`, as the official clients
+    /// do; Spotify accepts it from the daemon's session, which is not a registered device.
+    async fn connect_cmd(&self, to: &str, cmd: Value) -> Result<()> {
+        let path = format!("/connect-state/v1/player/command/from/{}/to/{to}", self.session.device_id());
+        self.session.spclient().request(&reqwest::Method::POST, &path, None, Some(json!({"command": cmd}).to_string().as_bytes())).await?;
+        Ok(())
+    }
+
+    /// The active device, else this player's.
+    async fn active_device(&self) -> Result<String> {
+        let active = self.cluster.lock().unwrap().as_ref().map(|l| l.active.clone()).filter(|a| !a.is_empty());
+        match active {
+            Some(active) => Ok(active),
+            None => self.device().await,
+        }
+    }
+
+    /// Starts playback here; `body` as for `PUT /me/player/play`.
+    pub async fn play(&self, body: Value) -> Result<()> {
+        if self.connect {
+            return self.connect_cmd(&self.device().await?, connect_play(&body)).await;
+        }
+        self.web("/me/player/play", Some(body)).await
+    }
+
+    /// A playback option on this player: Connect `cmds`, or the Web API `path` (`PUT`, ECS).
+    pub async fn here(&self, cmds: &[Value], path: &str) -> Result<()> {
+        if !self.connect {
+            return self.web(path, None).await;
+        }
+        let device = self.device().await?;
+        for cmd in cmds {
+            self.connect_cmd(&device, cmd.clone()).await?;
+        }
+        Ok(())
+    }
+
+    /// A command for whichever device is active: Connect `cmd`, or the Web API `path` (ECS).
+    pub async fn on_active(&self, cmd: Value, method: reqwest::Method, path: &str) -> Result<()> {
+        if self.connect {
+            return self.connect_cmd(&self.active_device().await?, cmd).await;
+        }
+        self.web_active(method, path).await
+    }
+
+    /// The account's Connect devices. With Soloist they come from the cluster; with ECS from the
+    /// Web API, as the cluster does not list the SDK's own device.
     pub async fn devices(&self) -> Result<Vec<proto::Device>> {
+        if self.connect {
+            return Ok(self.cluster.lock().unwrap().as_ref().context("not connected to Spotify Connect")?.devices.clone());
+        }
         let res = self.http.get(format!("{WEB_API}/me/player/devices")).bearer_auth(auth::web_token().await?).send().await?;
         let v: Value = res.error_for_status()?.json().await?;
         Ok(v["devices"]
@@ -198,6 +258,12 @@ impl Player {
 
     /// Moves playback to `device` (any Connect device of the account).
     pub async fn transfer(&self, device: &str, play: bool) -> Result<()> {
+        if self.connect {
+            let path = format!("/connect-state/v1/connect/transfer/from/{}/to/{device}", self.session.device_id());
+            let body = json!({"transfer_options": {"restore_paused": if play { "resume" } else { "pause" }}});
+            self.session.spclient().request(&reqwest::Method::POST, &path, None, Some(body.to_string().as_bytes())).await?;
+            return Ok(());
+        }
         let res = self
             .http
             .put(format!("{WEB_API}/me/player"))
@@ -212,7 +278,7 @@ impl Player {
     }
 
     /// Web API call for whichever device is active (no `device_id`).
-    pub async fn web_active(&self, method: reqwest::Method, path: &str) -> Result<()> {
+    async fn web_active(&self, method: reqwest::Method, path: &str) -> Result<()> {
         let res = self.http.request(method, format!("{WEB_API}{path}")).bearer_auth(auth::web_token().await?).header("content-length", "0").send().await?;
         if !res.status().is_success() {
             bail!("{path}: {} {}", res.status(), res.text().await.unwrap_or_default());
@@ -244,7 +310,7 @@ impl Player {
     }
 
     /// Web API call targeting this player's device.
-    pub async fn web(&self, path: &str, body: Option<Value>) -> Result<()> {
+    async fn web(&self, path: &str, body: Option<Value>) -> Result<()> {
         let device = self.device().await?;
         let sep = if path.contains('?') { '&' } else { '?' };
         let mut req = self
@@ -465,6 +531,7 @@ impl Mirror {
                 session: session.clone(),
                 active: cluster.active_device_id.clone(),
                 state: cluster.player_state.clone().unwrap_or_default(),
+                devices: devices(&cluster),
             });
             if let Err(e) = self.apply(session, cluster).await {
                 log::warn!("connect state: {e:#}");
@@ -547,6 +614,43 @@ impl Mirror {
         });
         Ok(())
     }
+}
+
+/// The cluster's visible devices (hum's observer is hidden).
+fn devices(cluster: &Cluster) -> Vec<proto::Device> {
+    let mut devices: Vec<_> = cluster
+        .device
+        .iter()
+        .filter(|(_, d)| !d.capabilities.hidden)
+        .map(|(id, d)| proto::Device {
+            id: id.clone(),
+            name: d.name.clone(),
+            kind: format!("{:?}", d.device_type.enum_value_or_default()).to_lowercase(),
+            active: *id == cluster.active_device_id,
+        })
+        .collect();
+    devices.sort_by(|a, b| a.name.cmp(&b.name));
+    devices
+}
+
+/// Connect `play` command for a `PUT /me/player/play` body: a context, or `uris` as a one-page
+/// context; `offset.uri` and `position_ms` become `skip_to` and `seek_to`.
+fn connect_play(body: &Value) -> Value {
+    let context = match body["context_uri"].as_str() {
+        Some(uri) => json!({"uri": uri, "url": format!("context://{uri}")}),
+        None => {
+            let tracks: Vec<Value> = body["uris"].as_array().into_iter().flatten().map(|u| json!({"uri": u})).collect();
+            json!({"pages": [{"tracks": tracks}]})
+        }
+    };
+    let mut options = json!({});
+    if let Some(uri) = body.pointer("/offset/uri").filter(|u| u.is_string()) {
+        options["skip_to"] = json!({"track_uri": uri});
+    }
+    if let Some(ms) = body.get("position_ms").filter(|ms| ms.as_u64() != Some(0)) {
+        options["seek_to"] = ms.clone();
+    }
+    json!({"endpoint": "play", "context": context, "options": options})
 }
 
 /// Indices of the playable upcoming tracks, as `NowPlaying.next` lists them. Next tracks also hold
@@ -637,6 +741,20 @@ mod tests {
         assert_eq!(shown, [0, 3, 4]);
         assert_eq!(find(&next, &shown, "spotify:track:a", 1).unwrap(), 4);
         assert!(find(&next, &shown, "spotify:track:cur", 0).is_err());
+    }
+
+    #[test]
+    fn connect_play_from_web_bodies() {
+        let body = json!({"context_uri": "spotify:album:a", "offset": {"uri": "spotify:track:t"}, "position_ms": 45000});
+        assert_eq!(
+            connect_play(&body),
+            json!({"endpoint": "play", "context": {"uri": "spotify:album:a", "url": "context://spotify:album:a"},
+                   "options": {"skip_to": {"track_uri": "spotify:track:t"}, "seek_to": 45000}})
+        );
+        assert_eq!(
+            connect_play(&json!({"uris": ["spotify:track:a", "spotify:track:b"], "position_ms": 0})),
+            json!({"endpoint": "play", "context": {"pages": [{"tracks": [{"uri": "spotify:track:a"}, {"uri": "spotify:track:b"}]}]}, "options": {}})
+        );
     }
 
     #[test]

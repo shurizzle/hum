@@ -42,6 +42,8 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
 
 ## Open
 
+- Soloist: a seek while paused (MPRIS `Seek`) leaves the position unchanged; while playing it works.
+  Seen with 0.1.1 too (2026-11-22), not investigated.
 - Linux: the `hum` binary is fully static (musl), but Electron is a glibc build needing system
   libraries (`libnss3`, `libasound2`, `libgbm`, ...): no playback on musl distros (Alpine), and
   minimal installs need those packages.

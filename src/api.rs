@@ -30,7 +30,7 @@ const OPS: &[&str] = &[
     "addToLibrary",
     "removeFromLibrary",
 ];
-const WEB_API: &str = "https://api.spotify.com/v1";
+const SPCLIENT: &str = "https://spclient.wg.spotify.com";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Item {
@@ -194,20 +194,37 @@ impl Api {
     }
 
     /// Like/unlike, like the heart of the web player: tracks, albums, artists, shows, episodes go
-    /// through pathfinder, playlists through the Web API (the web player uses its rootlist there).
+    /// through pathfinder, playlists through the rootlist (`addToLibrary` refuses them).
     pub async fn set_saved(&self, uri: &str, on: bool) -> Result<()> {
-        if let Some(id) = uri.strip_prefix("spotify:playlist:") {
-            let token = self.tokens.read().unwrap().web_token.clone();
-            let url = format!("{WEB_API}/playlists/{id}/followers");
-            let req = if on { self.http.put(url).json(&json!({"public": false})) } else { self.http.delete(url) };
-            let res = req.bearer_auth(token).send().await?;
-            if !res.status().is_success() {
-                bail!("{uri}: {} {}", res.status(), res.text().await.unwrap_or_default());
-            }
-            return Ok(());
+        if uri.starts_with("spotify:playlist:") {
+            return self.set_followed(uri, on).await;
         }
         let op = if on { "addToLibrary" } else { "removeFromLibrary" };
         errors(self.query(op, json!({"libraryItemUris": [uri], "interactionId": null})).await?)?;
+        Ok(())
+    }
+
+    /// Adds a playlist at the top of the rootlist, or removes it, as the web player does.
+    async fn set_followed(&self, uri: &str, on: bool) -> Result<()> {
+        let (access, client, user) = {
+            let t = self.tokens.read().unwrap();
+            (t.access_token.clone(), t.client_token.clone(), t.user.clone())
+        };
+        let root = format!("{SPCLIENT}/playlist/v2/user/{user}/rootlist");
+        let send = |req: reqwest::RequestBuilder| req.bearer_auth(&access).header("client-token", &client).header("accept", "application/json").send();
+        let v: Value = send(self.http.get(format!("{root}?decorate=revision"))).await?.error_for_status()?.json().await?;
+        let at = v.pointer("/contents/items").and_then(Value::as_array).into_iter().flatten().position(|i| i["uri"] == uri);
+        let op = match (on, at) {
+            (true, None) => json!({"kind": "ADD", "add": {"fromIndex": 0, "items": [{"uri": uri, "attributes": {"timestamp": crate::proto::now_ms().to_string()}}]}}),
+            (false, Some(i)) => json!({"kind": "REM", "rem": {"fromIndex": i, "length": 1, "items": [{"uri": uri}]}}),
+            _ => return Ok(()),
+        };
+        let changes = json!({"baseRevision": v["revision"], "deltas": [{"ops": [op], "info": {"source": {"client": "WEBPLAYER"}}}],
+                             "wantResultingRevisions": false, "wantSyncResult": false, "nonces": []});
+        let res = send(self.http.post(format!("{root}/changes")).json(&changes)).await?;
+        if !res.status().is_success() {
+            bail!("{uri}: {} {}", res.status(), res.text().await.unwrap_or_default());
+        }
         Ok(())
     }
 
@@ -572,7 +589,7 @@ mod tests {
     #[ignore]
     async fn scrape_finds_every_op() {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let api = Api::new(Tokens { access_token: String::new(), client_token: String::new(), web_token: String::new() });
+        let api = Api::new(Tokens { access_token: String::new(), client_token: String::new(), user: String::new() });
         let (h, complete) = api.scrape_hashes(&[]).await.unwrap();
         let missing: Vec<_> = OPS.iter().filter(|op| !h.ops.contains_key(**op)).collect();
         assert!(missing.is_empty(), "missing {missing:?} (complete: {complete})");

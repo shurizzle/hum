@@ -38,6 +38,14 @@ pub fn engine() -> Option<Engine> {
     None
 }
 
+/// Whether `ensure_engine` will run Soloist (set up, or to be paired), without setting anything up.
+pub fn soloist_next() -> bool {
+    match engine() {
+        Some(engine) => matches!(engine, Engine::Soloist { .. }),
+        None => soloist::binary().is_some(),
+    }
+}
+
 /// Picks and, when nothing is set up yet, installs the playback engine (foreground, before the
 /// daemon starts): a prior setup wins; else an installed Soloist is paired; else ECS is downloaded.
 pub async fn ensure_engine() -> Result<Engine> {

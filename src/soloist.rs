@@ -33,7 +33,7 @@ use crate::{
     proto::{self, NowPlaying},
 };
 
-/// Device name Soloist registers as, and that `run` looks up on the Web API.
+/// Device name Soloist registers as.
 const DEVICE_NAME: &str = "hum";
 const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 const VOLUME_KEY: &str = "volume";
@@ -289,19 +289,19 @@ pub async fn run(
     sink.send(WsMessage::Text(json!({"type": "command", "command": "get_state"}).to_string().into())).await?;
     log::info!("Soloist started on ws port {port}");
 
-    // Soloist's Web API device id, for the daemon's device-targeted calls.
+    // Soloist's Connect device id, for the daemon's device-targeted commands.
     {
         let device = device.clone();
         let dir = dir.clone();
         tokio::spawn(async move {
             for _ in 0..30 {
-                if let Ok(Some(id)) = lookup_device(&dir).await {
+                if let Some(id) = device_id(&dir) {
                     device.send_replace(Some(id));
                     return;
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
-            log::warn!("Soloist device not found on the Web API");
+            log::warn!("Soloist wrote no device id");
         });
     }
 
@@ -513,22 +513,11 @@ fn translate(cmd: &Value, last_playing: bool) -> Option<Value> {
     }
 }
 
-/// Soloist's device id once it is visible on the Web API. Soloist writes its Connect device id
-/// (same as the Web API one) to `<dir>/.device_id`; without that file it is matched by name.
-async fn lookup_device(dir: &Path) -> Result<Option<String>> {
-    let own = std::fs::read_to_string(dir.join(".device_id")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let token = auth::web_token().await?;
-    let v: Value = reqwest::Client::new().get("https://api.spotify.com/v1/me/player/devices").bearer_auth(token).send().await?.error_for_status()?.json().await?;
-    Ok(v["devices"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|d| match &own {
-            Some(id) => d["id"].as_str() == Some(id),
-            None => d["name"].as_str() == Some(DEVICE_NAME),
-        })
-        .and_then(|d| d["id"].as_str())
-        .map(str::to_string))
+/// Soloist's Connect device id, which it writes to `<dir>/.device_id`.
+// shortcut: the file may exist before Soloist registers on Connect, so the first commands could
+// miss it; poll the mirrored cluster for the id if that shows up.
+fn device_id(dir: &Path) -> Option<String> {
+    std::fs::read_to_string(dir.join(".device_id")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 /// Kills a Soloist left by a daemon that died without reaping it: it keeps `<dir>/soloist.pid`, so

@@ -23,7 +23,7 @@ const SESSION_SCOPES: &[&str] = &[
     "user-read-private",
 ];
 
-// hum's own developer app: Web Playback SDK and Web API. The keymaster id is rate limited there (429).
+// hum's own developer app, ECS only: Web Playback SDK and Web API. The keymaster id gets 429 there.
 const WEB_CLIENT_ID: &str = "7bd5b13670b74564b1de554c858d469e";
 const WEB_SCOPES: &[&str] = &[
     "streaming",
@@ -176,15 +176,16 @@ fn collect_codes(listener: &std::net::TcpListener, urls: &[String], finish: Opti
 }
 
 /// Logs in through the browser when needed: session credentials (keymaster app, for the access
-/// point, login5 and pathfinder) and the web token (hum's app, for the Web API and the SDK). Both
-/// apps are authorized in one tab, which then opens the Soloist dashboard when pairing comes next
-/// (`setup::ensure_engine`), so the API key is fetched in the same tab. Must run in the foreground process: the daemon has no terminal
-/// or browser.
+/// point, login5, pathfinder and spclient) and, with ECS only, the web token (hum's app, for the
+/// Web API and the SDK). The apps are authorized in one tab, which then opens the Soloist dashboard
+/// when pairing comes next (`setup::ensure_engine`), so the API key is fetched in the same tab.
+/// Must run in the foreground process: the daemon has no terminal or browser.
 pub async fn ensure_login() -> Result<()> {
     let cache = cache()?;
     let need_session = cache.credentials().is_none();
     let granted: Option<WebToken> = std::fs::read(web_token_path()).ok().and_then(|b| serde_json::from_slice(&b).ok());
-    let need_web = !granted.is_some_and(|t| WEB_SCOPES.iter().all(|s| t.scopes.iter().any(|g| g == s)));
+    // Soloist runs on the session token alone; only ECS (SDK and Web API) needs hum's app.
+    let need_web = !crate::setup::soloist_next() && !granted.is_some_and(|t| WEB_SCOPES.iter().all(|s| t.scopes.iter().any(|g| g == s)));
     let flows: Vec<Flow> = [(need_session, SESSION_CLIENT_ID, SESSION_SCOPES), (need_web, WEB_CLIENT_ID, WEB_SCOPES)]
         .into_iter()
         .filter(|(needed, ..)| *needed)

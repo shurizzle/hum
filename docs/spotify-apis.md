@@ -5,13 +5,13 @@ the official app. All of this is undocumented and can break without notice.
 
 ## Authentication
 
-- `src/auth.rs`. First run does two browser OAuth (PKCE) logins, redirect
+- `src/auth.rs`. First run does one or two browser OAuth (PKCE) logins, redirect
   `http://127.0.0.1:8898/login`:
   - librespot's keymaster client id `65b708073fc0480ea92a077233ca87bd`: its token connects a
     librespot session with `store = true`, saving reusable credentials. Browsing token:
     `session.login5().auth_token()`; client token: `session.spclient().client_token()`.
-  - hum's developer app `7bd5b13670b74564b1de554c858d469e`: saved in `web-token.json` and refreshed
-    by `auth::web_token`. Used for the Web API and the Web Playback SDK (the keymaster id gets 429
+  - hum's developer app `7bd5b13670b74564b1de554c858d469e`, ECS only: saved in `web-token.json` and
+    refreshed by `auth::web_token`. Used for the Web API and the Web Playback SDK (the keymaster id gets 429
     there).
 - All tokens reach clients via `Cmd::Token`.
 
@@ -96,13 +96,8 @@ else is ignored.
 
 ## Web API
 
-`https://api.spotify.com/v1` with the web token:
-
-Client: `PUT|DELETE /playlists/{id}/followers` (`Api::set_saved`): saving playlists, which
-`addToLibrary` refuses (the web player edits its rootlist instead). Needs `playlist-modify-public`
-and `playlist-modify-private`.
-
-Daemon:
+`https://api.spotify.com/v1` with the web token, ECS only (Soloist uses
+[Connect commands](playback.md#connect-commands-soloist)). Daemon:
 
 - `PUT /me/player/play|shuffle|repeat?device_id=<hum device>`, `PUT /me/player` (transfer),
   `POST /me/player/queue?uri=` (empty body: Spotify answers 411 to bodiless POSTs without a content
@@ -112,6 +107,13 @@ Daemon:
   (403 to development-mode apps). There is no Web API call to remove a queued track.
 
 ## spclient (librespot session)
+
+- Client: `GET https://spclient.wg.spotify.com/playlist/v2/user/<user>/rootlist?decorate=revision`
+  (JSON with `accept: application/json`; all items without `from`/`length`), then
+  `POST .../rootlist/changes` `{baseRevision, deltas: [{ops: [{kind: "ADD", add: {fromIndex: 0,
+  items: [{uri, attributes: {timestamp}}]}}], info: {source: {client: "WEBPLAYER"}}}], ...}` or a
+  `REM` op `{fromIndex, length: 1, items: [{uri}]}` (`Api::set_followed`): saving playlists, which
+  `addToLibrary` refuses, as the web player does.
 
 - `POST /extended-metadata/v0/extended-metadata` (`meta::tracks`): `TRACK_V4` for many tracks in
   one request; covers are `https://i.scdn.co/image/<hex file_id>` (`DEFAULT` size ≈ 300 px).
