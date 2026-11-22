@@ -1,11 +1,8 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use futures_util::future::join_all;
+use parking_lot::RwLock;
 use regex::Regex;
 use serde_json::{Value, json};
 
@@ -50,13 +47,22 @@ impl Item {
 
     /// An entity known only by uri; `Api::open` fills in the rest.
     pub fn from_uri(uri: &str) -> Self {
-        Self { uri: uri.into(), name: String::new(), sub: String::new(), image: None, desc: String::new() }
+        Self {
+            uri: uri.into(),
+            name: String::new(),
+            sub: String::new(),
+            image: None,
+            desc: String::new(),
+        }
     }
 
     /// Page for a playback context. Artist "Popular" playback runs in a list context
     /// (`spotify:list:popular-...:artist_<id>`, see `player::play_body`) that maps to the artist.
     pub fn from_context(uri: &str) -> Self {
-        match uri.strip_prefix("spotify:list:").and_then(|l| l.rsplit_once(":artist_")) {
+        match uri
+            .strip_prefix("spotify:list:")
+            .and_then(|l| l.rsplit_once(":artist_"))
+        {
             Some((_, id)) => Self::from_uri(&format!("spotify:artist:{id}")),
             None => Self::from_uri(uri),
         }
@@ -101,7 +107,9 @@ const MISSING_TTL: u64 = 24 * 3600;
 
 impl Hashes {
     fn recently_missing(&self, op: &str, now: u64) -> bool {
-        self.missing.get(op).is_some_and(|t| now.saturating_sub(*t) < MISSING_TTL)
+        self.missing
+            .get(op)
+            .is_some_and(|t| now.saturating_sub(*t) < MISSING_TTL)
     }
 
     /// Merges a scrape; `complete` when every chunk was read, so operations still absent are
@@ -138,7 +146,9 @@ impl Api {
                        "includeEpisodeContentRatingsV2": false}),
             )
             .await?;
-        let sections = v.pointer("/data/home/sectionContainer/sections/items").and_then(Value::as_array);
+        let sections = v
+            .pointer("/data/home/sectionContainer/sections/items")
+            .and_then(Value::as_array);
         Ok(sections
             .into_iter()
             .flatten()
@@ -188,9 +198,23 @@ impl Api {
     /// Whether each uri is in Your Library (Liked Songs for tracks). Playlists are not supported
     /// by this operation: they are saved when they show up in `library`.
     pub async fn saved(&self, uris: &[String]) -> Result<Vec<bool>> {
-        let v = errors(self.query("areEntitiesInLibrary", json!({"uris": uris})).await?)?;
-        let lookup = v.pointer("/data/lookup").and_then(Value::as_array).cloned().unwrap_or_default();
-        Ok((0..uris.len()).map(|i| lookup.get(i).and_then(|l| l.pointer("/data/saved")?.as_bool()).unwrap_or(false)).collect())
+        let v = errors(
+            self.query("areEntitiesInLibrary", json!({"uris": uris}))
+                .await?,
+        )?;
+        let lookup = v
+            .pointer("/data/lookup")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok((0..uris.len())
+            .map(|i| {
+                lookup
+                    .get(i)
+                    .and_then(|l| l.pointer("/data/saved")?.as_bool())
+                    .unwrap_or(false)
+            })
+            .collect())
     }
 
     /// Like/unlike, like the heart of the web player: tracks, albums, artists, shows, episodes go
@@ -199,31 +223,64 @@ impl Api {
         if uri.starts_with("spotify:playlist:") {
             return self.set_followed(uri, on).await;
         }
-        let op = if on { "addToLibrary" } else { "removeFromLibrary" };
-        errors(self.query(op, json!({"libraryItemUris": [uri], "interactionId": null})).await?)?;
+        let op = if on {
+            "addToLibrary"
+        } else {
+            "removeFromLibrary"
+        };
+        errors(
+            self.query(op, json!({"libraryItemUris": [uri], "interactionId": null}))
+                .await?,
+        )?;
         Ok(())
     }
 
     /// Adds a playlist at the top of the rootlist, or removes it, as the web player does.
     async fn set_followed(&self, uri: &str, on: bool) -> Result<()> {
         let (access, client, user) = {
-            let t = self.tokens.read().unwrap();
-            (t.access_token.clone(), t.client_token.clone(), t.user.clone())
+            let t = self.tokens.read();
+            (
+                t.access_token.clone(),
+                t.client_token.clone(),
+                t.user.clone(),
+            )
         };
         let root = format!("{SPCLIENT}/playlist/v2/user/{user}/rootlist");
-        let send = |req: reqwest::RequestBuilder| req.bearer_auth(&access).header("client-token", &client).header("accept", "application/json").send();
-        let v: Value = send(self.http.get(format!("{root}?decorate=revision"))).await?.error_for_status()?.json().await?;
-        let at = v.pointer("/contents/items").and_then(Value::as_array).into_iter().flatten().position(|i| i["uri"] == uri);
+        let send = |req: reqwest::RequestBuilder| {
+            req.bearer_auth(&access)
+                .header("client-token", &client)
+                .header("accept", "application/json")
+                .send()
+        };
+        let v: Value = send(self.http.get(format!("{root}?decorate=revision")))
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let at = v
+            .pointer("/contents/items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .position(|i| i["uri"] == uri);
         let op = match (on, at) {
-            (true, None) => json!({"kind": "ADD", "add": {"fromIndex": 0, "items": [{"uri": uri, "attributes": {"timestamp": crate::proto::now_ms().to_string()}}]}}),
-            (false, Some(i)) => json!({"kind": "REM", "rem": {"fromIndex": i, "length": 1, "items": [{"uri": uri}]}}),
+            (true, None) => {
+                json!({"kind": "ADD", "add": {"fromIndex": 0, "items": [{"uri": uri, "attributes": {"timestamp": crate::proto::now_ms().to_string()}}]}})
+            }
+            (false, Some(i)) => {
+                json!({"kind": "REM", "rem": {"fromIndex": i, "length": 1, "items": [{"uri": uri}]}})
+            }
             _ => return Ok(()),
         };
         let changes = json!({"baseRevision": v["revision"], "deltas": [{"ops": [op], "info": {"source": {"client": "WEBPLAYER"}}}],
                              "wantResultingRevisions": false, "wantSyncResult": false, "nonces": []});
         let res = send(self.http.post(format!("{root}/changes")).json(&changes)).await?;
         if !res.status().is_success() {
-            bail!("{uri}: {} {}", res.status(), res.text().await.unwrap_or_default());
+            bail!(
+                "{uri}: {} {}",
+                res.status(),
+                res.text().await.unwrap_or_default()
+            );
         }
         Ok(())
     }
@@ -242,7 +299,12 @@ impl Api {
 
     /// One page of a playlist, album, liked songs or artist, whether more pages follow, and the
     /// opened entity itself when the response describes it.
-    pub async fn open(&self, uri: &str, offset: usize, limit: usize) -> Result<(Vec<Item>, bool, Option<Item>)> {
+    pub async fn open(
+        &self,
+        uri: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<Item>, bool, Option<Item>)> {
         let id = uri.rsplit(':').next().unwrap_or_default();
         let v = match uri.split(':').nth(1) {
             Some("playlist") => {
@@ -269,7 +331,13 @@ impl Api {
 
     /// `query` through the disk cache: a fresh entry answers without a request; when the request
     /// fails, an expired entry is the fallback.
-    async fn cached_query(&self, key: &str, ttl: Duration, op: &str, variables: Value) -> Result<Value> {
+    async fn cached_query(
+        &self,
+        key: &str,
+        ttl: Duration,
+        op: &str,
+        variables: Value,
+    ) -> Result<Value> {
         let cache = Cache::global();
         let parse = |b: Vec<u8>| serde_json::from_slice::<Value>(&b).ok();
         if let Some(v) = cache.read_fresh(key, ttl).and_then(parse) {
@@ -287,7 +355,7 @@ impl Api {
     async fn query(&self, op: &str, variables: Value) -> Result<Value> {
         let hash = self.hash(op).await?;
         let (access, client) = {
-            let t = self.tokens.read().unwrap();
+            let t = self.tokens.read();
             (t.access_token.clone(), t.client_token.clone())
         };
         let res = self
@@ -305,13 +373,16 @@ impl Api {
         if !status.is_success() {
             // A rotated hash surfaces as an error: drop it so the next call refetches.
             if stale_hash(status, &body) {
-                let mut hashes = self.hashes.write().unwrap();
+                let mut hashes = self.hashes.write();
                 if let Some(h) = hashes.as_mut() {
                     h.ops.remove(op);
                     save(h);
                 }
             }
-            bail!("{op}: {status} {}", body.chars().take(200).collect::<String>());
+            bail!(
+                "{op}: {status} {}",
+                body.chars().take(200).collect::<String>()
+            );
         }
         Ok(serde_json::from_str(&body)?)
     }
@@ -319,9 +390,12 @@ impl Api {
     async fn hash(&self, op: &str) -> Result<String> {
         let now = crate::auth::now();
         let known = {
-            let mut hashes = self.hashes.write().unwrap();
+            let mut hashes = self.hashes.write();
             let h = hashes.get_or_insert_with(|| {
-                Cache::global().read_any(HASHES_KEY).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+                Cache::global()
+                    .read_any(HASHES_KEY)
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or_default()
             });
             if let Some(hash) = h.ops.get(op) {
                 return Ok(hash.clone());
@@ -332,22 +406,27 @@ impl Api {
             h.chunks.clone()
         };
         let (fresh, complete) = self.scrape_hashes(&known).await?;
-        let mut hashes = self.hashes.write().unwrap();
+        let mut hashes = self.hashes.write();
         let h = hashes.get_or_insert_default();
         h.merge(fresh, complete, now);
         save(h);
-        h.ops.get(op).cloned().with_context(|| format!("no persisted query hash for {op}"))
+        h.ops
+            .get(op)
+            .cloned()
+            .with_context(|| format!("no persisted query hash for {op}"))
     }
 
     /// Reads persisted query hashes from the web player bundle and its chunks (see `passes`), each
     /// pass only while an operation is still missing. True when every chunk fetched was read.
     async fn scrape_hashes(&self, known: &[String]) -> Result<(Hashes, bool)> {
         let html = self.http.get(WEB_PLAYER).send().await?.text().await?;
-        let main = Regex::new(r#"https://open\.spotifycdn\.com/cdn/build/web-player/web-player\.[0-9a-f]+\.js"#)?
-            .find(&html)
-            .context("web player bundle not found")?
-            .as_str()
-            .to_string();
+        let main = Regex::new(
+            r#"https://open\.spotifycdn\.com/cdn/build/web-player/web-player\.[0-9a-f]+\.js"#,
+        )?
+        .find(&html)
+        .context("web player bundle not found")?
+        .as_str()
+        .to_string();
         let main_js = self.http.get(&main).send().await?.text().await?;
         let mut out = Hashes::default();
         extract(&main_js, &mut out.ops);
@@ -356,7 +435,11 @@ impl Api {
             if OPS.iter().all(|op| out.ops.contains_key(*op)) {
                 break;
             }
-            let chunks = join_all(pass.iter().map(|(_, u)| async move { self.http.get(u).send().await?.text().await })).await;
+            let chunks = join_all(
+                pass.iter()
+                    .map(|(_, u)| async move { self.http.get(u).send().await?.text().await }),
+            )
+            .await;
             for ((name, _), js) in pass.iter().zip(&chunks) {
                 complete &= js.is_ok();
                 if js.as_deref().is_ok_and(|js| extract(js, &mut out.ops)) {
@@ -373,12 +456,21 @@ fn chunk_urls(main_js: &str) -> Vec<(String, String)> {
     static MAP: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
         Regex::new(r#"\(\{([^}]*)\}\)\[e\]\|\|e\)\+"\."\+\(\{([^}]*)\}\)\[e\]\+"\.js""#).unwrap()
     });
-    static PAIR: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r#"(\d+):"([^"]+)""#).unwrap());
-    let Some(c) = MAP.captures(main_js) else { return vec![] };
-    let names: HashMap<_, _> = PAIR.captures_iter(&c[1]).map(|p| (p[1].to_string(), p[2].to_string())).collect();
+    static PAIR: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r#"(\d+):"([^"]+)""#).unwrap());
+    let Some(c) = MAP.captures(main_js) else {
+        return vec![];
+    };
+    let names: HashMap<_, _> = PAIR
+        .captures_iter(&c[1])
+        .map(|p| (p[1].to_string(), p[2].to_string()))
+        .collect();
     PAIR.captures_iter(&c[2])
         .map(|p| {
-            let name = names.get(&p[1]).cloned().unwrap_or_else(|| p[1].to_string());
+            let name = names
+                .get(&p[1])
+                .cloned()
+                .unwrap_or_else(|| p[1].to_string());
             let url = format!("{CDN}{name}.{}.js", &p[2]);
             (name, url)
         })
@@ -387,15 +479,20 @@ fn chunk_urls(main_js: &str) -> Vec<(String, String)> {
 
 /// Lookup order: chunks that held an operation last time (`known`), route chunks, the rest.
 fn passes(chunks: Vec<(String, String)>, known: &[String]) -> [Vec<(String, String)>; 3] {
-    let (first, rest): (Vec<_>, Vec<_>) = chunks.into_iter().partition(|(name, _)| known.contains(name));
-    let (routes, others) = rest.into_iter().partition(|(name, _)| name.contains("routes"));
+    let (first, rest): (Vec<_>, Vec<_>) = chunks
+        .into_iter()
+        .partition(|(name, _)| known.contains(name));
+    let (routes, others) = rest
+        .into_iter()
+        .partition(|(name, _)| name.contains("routes"));
     [first, routes, others]
 }
 
 /// Adds the hashes of `OPS` found in `js`; true when any was found.
 fn extract(js: &str, ops: &mut HashMap<String, String>) -> bool {
-    static RE: std::sync::LazyLock<Regex> =
-        std::sync::LazyLock::new(|| Regex::new(r#""(\w+)","(?:query|mutation)","([0-9a-f]{64})""#).unwrap());
+    static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r#""(\w+)","(?:query|mutation)","([0-9a-f]{64})""#).unwrap()
+    });
     let mut found = false;
     for c in RE.captures_iter(js) {
         if OPS.contains(&&c[1]) {
@@ -456,9 +553,16 @@ pub fn items(v: &Value, skip: &str) -> Vec<Item> {
 fn paged(v: &Value) -> Option<(usize, usize)> {
     match v {
         Value::Object(o) => {
-            let own = o.get("items").and_then(Value::as_array).zip(o.get("totalCount").and_then(Value::as_u64));
+            let own = o
+                .get("items")
+                .and_then(Value::as_array)
+                .zip(o.get("totalCount").and_then(Value::as_u64));
             let own = own.map(|(items, total)| (items.len(), total as usize));
-            o.iter().filter(|(k, _)| *k != "items").filter_map(|(_, x)| paged(x)).chain(own).max()
+            o.iter()
+                .filter(|(k, _)| *k != "items")
+                .filter_map(|(_, x)| paged(x))
+                .chain(own)
+                .max()
         }
         Value::Array(a) => a.iter().filter_map(paged).max(),
         _ => None,
@@ -475,12 +579,24 @@ fn as_item(o: &serde_json::Map<String, Value>) -> Option<Item> {
     if matches!(kind, "user" | "image" | "mosaic") {
         return None;
     }
-    let name = o.get("name").or_else(|| o.get("profile")?.get("name"))?.as_str()?;
+    let name = o
+        .get("name")
+        .or_else(|| o.get("profile")?.get("name"))?
+        .as_str()?;
     let artists = o.get("artists").map(names).unwrap_or_default();
-    let owner = ["/ownerV2/data/name", "/owner/display_name", "/publisher/name"]
-        .iter()
-        .find_map(|p| Value::Object(o.clone()).pointer(p)?.as_str().map(str::to_string))
-        .unwrap_or_default();
+    let owner = [
+        "/ownerV2/data/name",
+        "/owner/display_name",
+        "/publisher/name",
+    ]
+    .iter()
+    .find_map(|p| {
+        Value::Object(o.clone())
+            .pointer(p)?
+            .as_str()
+            .map(str::to_string)
+    })
+    .unwrap_or_default();
     // Spotify's subtitles: "Playlist • owner", "Album • artists", artists alone for tracks.
     let label = match kind {
         "playlist" | "collection" => "Playlist",
@@ -496,9 +612,19 @@ fn as_item(o: &serde_json::Map<String, Value>) -> Option<Item> {
         (_, label, true) => label.to_string(),
         (_, label, false) => format!("{label} • {who}"),
     };
-    let desc = o.get("description").and_then(Value::as_str).map(plain).unwrap_or_default();
+    let desc = o
+        .get("description")
+        .and_then(Value::as_str)
+        .map(plain)
+        .unwrap_or_default();
     let image = image(&Value::Object(o.clone()));
-    Some(Item { uri: uri.to_string(), name: name.to_string(), sub, image, desc })
+    Some(Item {
+        uri: uri.to_string(),
+        name: name.to_string(),
+        sub,
+        image,
+        desc,
+    })
 }
 
 /// Strips the HTML links and entities Spotify puts in playlist descriptions.
@@ -513,7 +639,12 @@ fn plain(html: &str) -> String {
             _ => {}
         }
     }
-    out.replace("&amp;", "&").replace("&#x27;", "'").replace("&#39;", "'").replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">")
+    out.replace("&amp;", "&")
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
 }
 
 /// Cover url closest to 300px among all `{url, width}` image sources under `v`.
@@ -522,7 +653,11 @@ fn image(v: &Value) -> Option<String> {
         match v {
             Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
             Value::Object(o) => {
-                if let Some(url) = o.get("url").and_then(Value::as_str).filter(|u| u.starts_with("https://")) {
+                if let Some(url) = o
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .filter(|u| u.starts_with("https://"))
+                {
                     out.push((url, o.get("width").and_then(Value::as_i64).unwrap_or(300)));
                 }
                 o.values().for_each(|x| walk(x, out));
@@ -532,14 +667,26 @@ fn image(v: &Value) -> Option<String> {
     }
     let mut found = vec![];
     walk(v, &mut found);
-    found.into_iter().min_by_key(|(_, w)| (w - 300).abs()).map(|(u, _)| u.to_string())
+    found
+        .into_iter()
+        .min_by_key(|(_, w)| (w - 300).abs())
+        .map(|(u, _)| u.to_string())
 }
 
 /// Artist names from either `[{name}]` (Web API) or `{items: [{profile: {name}}]}` (pathfinder).
 fn names(v: &Value) -> String {
-    let list = v.get("items").unwrap_or(v).as_array().cloned().unwrap_or_default();
+    let list = v
+        .get("items")
+        .unwrap_or(v)
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     list.iter()
-        .filter_map(|a| a.get("name").or_else(|| a.get("profile")?.get("name"))?.as_str())
+        .filter_map(|a| {
+            a.get("name")
+                .or_else(|| a.get("profile")?.get("name"))?
+                .as_str()
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -549,7 +696,8 @@ fn names(v: &Value) -> String {
 /// bad variables, keeps the hash: rescraping the bundle is ~46 downloads for nothing.
 fn stale_hash(status: reqwest::StatusCode, body: &str) -> bool {
     use reqwest::StatusCode as S;
-    status == S::PRECONDITION_FAILED || (status == S::BAD_REQUEST && body.contains("GRAPHQL_UNKNOWN_OPERATION_NAME"))
+    status == S::PRECONDITION_FAILED
+        || (status == S::BAD_REQUEST && body.contains("GRAPHQL_UNKNOWN_OPERATION_NAME"))
 }
 
 #[cfg(test)]
@@ -560,9 +708,16 @@ mod tests {
     fn chunks_are_scanned_known_then_routes_then_rest() {
         let js = r#"({1:"xpui-routes-search",2:"vendor",3:"xpui-routes-album"})[e]||e)+"."+({1:"a1",2:"b2",3:"c3",4:"d4"})[e]+".js""#;
         let chunks = chunk_urls(js);
-        assert_eq!(chunks[0], ("xpui-routes-search".into(), format!("{CDN}xpui-routes-search.a1.js")));
+        assert_eq!(
+            chunks[0],
+            (
+                "xpui-routes-search".into(),
+                format!("{CDN}xpui-routes-search.a1.js")
+            )
+        );
         assert_eq!(chunks[3].0, "4");
-        let names = |v: &Vec<(String, String)>| v.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+        let names =
+            |v: &Vec<(String, String)>| v.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
         let [first, routes, others] = passes(chunks, &["xpui-routes-album".into()]);
         assert_eq!(names(&first), ["xpui-routes-album"]);
         assert_eq!(names(&routes), ["xpui-routes-search"]);
@@ -572,7 +727,10 @@ mod tests {
     #[test]
     fn missing_ops_wait_before_a_new_scrape() {
         let mut h = Hashes::default();
-        let found = |op: &str| Hashes { ops: HashMap::from([(op.to_string(), "x".into())]), ..Default::default() };
+        let found = |op: &str| Hashes {
+            ops: HashMap::from([(op.to_string(), "x".into())]),
+            ..Default::default()
+        };
         // An incomplete scrape (a chunk failed) never marks anything missing.
         h.merge(found("home"), false, 100);
         assert!(h.missing.is_empty());
@@ -589,10 +747,17 @@ mod tests {
     #[ignore]
     async fn scrape_finds_every_op() {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let api = Api::new(Tokens { access_token: String::new(), client_token: String::new(), user: String::new() });
+        let api = Api::new(Tokens {
+            access_token: String::new(),
+            client_token: String::new(),
+            user: String::new(),
+        });
         let (h, complete) = api.scrape_hashes(&[]).await.unwrap();
         let missing: Vec<_> = OPS.iter().filter(|op| !h.ops.contains_key(**op)).collect();
-        assert!(missing.is_empty(), "missing {missing:?} (complete: {complete})");
+        assert!(
+            missing.is_empty(),
+            "missing {missing:?} (complete: {complete})"
+        );
     }
 
     #[test]
@@ -626,31 +791,43 @@ mod tests {
 
     #[test]
     fn artist_list_context_opens_artist() {
-        assert_eq!(Item::from_context("spotify:list:popular-release-segments-main-roles:artist_abc").uri, "spotify:artist:abc");
-        assert_eq!(Item::from_context("spotify:playlist:p").uri, "spotify:playlist:p");
+        assert_eq!(
+            Item::from_context("spotify:list:popular-release-segments-main-roles:artist_abc").uri,
+            "spotify:artist:abc"
+        );
+        assert_eq!(
+            Item::from_context("spotify:playlist:p").uri,
+            "spotify:playlist:p"
+        );
     }
 
     #[test]
     fn items_skip_root_and_stop_at_leaves() {
         let v = json!({"data": {"playlistV2": {"uri": "spotify:playlist:p", "name": "P",
-            "ownerV2": {"data": {"uri": "spotify:user:u", "name": "me"}},
-            "content": {"items": [
-                {"itemV2": {"data": {"uri": "spotify:track:1", "name": "One",
-                    "artists": {"items": [{"uri": "spotify:artist:a", "profile": {"name": "A"}}]}}}},
-                {"itemV2": {"data": {"uri": "spotify:track:1", "name": "One"}}},
-                {"itemV2": {"data": {"uri": "spotify:track:2", "name": "Two", "artists": [{"name": "B"}, {"name": "C"}]}}}
-            ]}}}});
+        "ownerV2": {"data": {"uri": "spotify:user:u", "name": "me"}},
+        "content": {"items": [
+            {"itemV2": {"data": {"uri": "spotify:track:1", "name": "One",
+                "artists": {"items": [{"uri": "spotify:artist:a", "profile": {"name": "A"}}]}}}},
+            {"itemV2": {"data": {"uri": "spotify:track:1", "name": "One"}}},
+            {"itemV2": {"data": {"uri": "spotify:track:2", "name": "Two", "artists": [{"name": "B"}, {"name": "C"}]}}}
+        ]}}}});
         let got = items(&v, "spotify:playlist:p");
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].sub, "A");
         assert_eq!(got[1].sub, "B, C");
-        assert_eq!(plain("<a href=\"x\">Mecna</a>, Ernia &amp; more"), "Mecna, Ernia & more");
+        assert_eq!(
+            plain("<a href=\"x\">Mecna</a>, Ernia &amp; more"),
+            "Mecna, Ernia & more"
+        );
         let pl = json!({"uri": "spotify:playlist:q", "name": "Q", "ownerV2": {"data": {"name": "Spotify"}}});
         assert_eq!(items(&pl, "")[0].sub, "Playlist • Spotify");
         assert_eq!(items(&v, "")[0].uri, "spotify:playlist:p");
         let cover = json!({"uri": "spotify:album:x", "name": "X", "coverArt": {"sources": [
             {"url": "https://i.scdn.co/64", "width": 64}, {"url": "https://i.scdn.co/300", "width": 300},
             {"url": "https://i.scdn.co/640", "width": 640}]}});
-        assert_eq!(items(&cover, "")[0].image.as_deref(), Some("https://i.scdn.co/300"));
+        assert_eq!(
+            items(&cover, "")[0].image.as_deref(),
+            Some("https://i.scdn.co/300")
+        );
     }
 }

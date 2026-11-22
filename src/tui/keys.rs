@@ -27,7 +27,11 @@ pub struct Keys {
 
 impl Default for Keys {
     fn default() -> Self {
-        Keys { mode: default_mode(), timeout: default_timeout(), keys: HashMap::new() }
+        Keys {
+            mode: default_mode(),
+            timeout: default_timeout(),
+            keys: HashMap::new(),
+        }
     }
 }
 
@@ -49,7 +53,10 @@ pub enum Mode {
 
 /// One action or a list run in order; `Nop` or `[]` unbinds.
 #[derive(Deserialize)]
-#[serde(untagged, expecting = "an action (`Next`, `Set(Volume(Relative(5)))`, ...) or a list of actions")]
+#[serde(
+    untagged,
+    expecting = "an action (`Next`, `Set(Volume(Relative(5)))`, ...) or a list of actions"
+)]
 pub enum Binding {
     One(Action),
     Many(Vec<Action>),
@@ -163,12 +170,17 @@ pub enum Set {
 pub type Key = (KeyCode, KeyModifiers);
 
 pub fn key(e: KeyEvent) -> Key {
-    let mut mods = e.modifiers & (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT | KeyModifiers::SUPER);
+    let mut mods = e.modifiers
+        & (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT | KeyModifiers::SUPER);
     let code = match e.code {
         // The case already says shift; terminals send Ctrl+letter the same either way.
         KeyCode::Char(c) => {
             mods.remove(KeyModifiers::SHIFT);
-            KeyCode::Char(if mods.contains(KeyModifiers::CONTROL) { c.to_ascii_lowercase() } else { c })
+            KeyCode::Char(if mods.contains(KeyModifiers::CONTROL) {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            })
         }
         KeyCode::BackTab => {
             mods.remove(KeyModifiers::SHIFT);
@@ -188,7 +200,10 @@ pub fn parse(s: &str) -> Result<Vec<Key>> {
             && let Some(end) = rest.find('>')
             && end > 1
         {
-            out.push(special(&rest[1..end]).ok_or_else(|| anyhow::anyhow!("unknown key <{}> in {s:?}", &rest[1..end]))?);
+            out.push(
+                special(&rest[1..end])
+                    .ok_or_else(|| anyhow::anyhow!("unknown key <{}> in {s:?}", &rest[1..end]))?,
+            );
             rest = &rest[end + 1..];
         } else {
             out.push(key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)));
@@ -216,7 +231,9 @@ fn special(s: &str) -> Option<Key> {
     }
     let mut chars = name.chars();
     let code = match (chars.next(), chars.next()) {
-        (Some(c), None) if mods.contains(KeyModifiers::SHIFT) => KeyCode::Char(c.to_ascii_uppercase()),
+        (Some(c), None) if mods.contains(KeyModifiers::SHIFT) => {
+            KeyCode::Char(c.to_ascii_uppercase())
+        }
         (Some(c), None) => KeyCode::Char(c),
         _ => match name.to_ascii_lowercase().as_str() {
             "space" => KeyCode::Char(' '),
@@ -239,7 +256,12 @@ fn special(s: &str) -> Option<Key> {
             "end" => KeyCode::End,
             "pageup" => KeyCode::PageUp,
             "pagedown" => KeyCode::PageDown,
-            f => KeyCode::F(f.strip_prefix('f')?.parse().ok().filter(|n| (1..=24).contains(n))?),
+            f => KeyCode::F(
+                f.strip_prefix('f')?
+                    .parse()
+                    .ok()
+                    .filter(|n| (1..=24).contains(n))?,
+            ),
         },
     };
     Some(key(KeyEvent::new(code, mods)))
@@ -262,7 +284,11 @@ impl Keymap {
     pub fn new(user: &Keys) -> Result<Keymap> {
         let mut map = HashMap::new();
         let defaults = &config::defaults().keymap;
-        let layers = if user.mode == Mode::Merge { vec![defaults, user] } else { vec![user] };
+        let layers = if user.mode == Mode::Merge {
+            vec![defaults, user]
+        } else {
+            vec![user]
+        };
         for (notation, binding) in layers.into_iter().flat_map(|k| &k.keys) {
             let seq = parse(notation)?;
             let actions = match binding {
@@ -276,12 +302,19 @@ impl Keymap {
                 map.insert(seq, (notation.clone(), actions));
             }
         }
-        Ok(Keymap { map, timeout: user.timeout.map(Duration::from_millis) })
+        Ok(Keymap {
+            map,
+            timeout: user.timeout.map(Duration::from_millis),
+        })
     }
 
     pub fn lookup(&self, seq: &[Key]) -> Lookup<'_> {
         let exact = self.map.get(seq).map(|(_, a)| a.as_slice());
-        if self.map.keys().any(|k| k.len() > seq.len() && k.starts_with(seq)) {
+        if self
+            .map
+            .keys()
+            .any(|k| k.len() > seq.len() && k.starts_with(seq))
+        {
             Lookup::Prefix(exact)
         } else {
             exact.map_or(Lookup::None, Lookup::Exact)
@@ -292,7 +325,11 @@ impl Keymap {
     pub fn help(&self) -> Vec<(String, String)> {
         let mut by_action: HashMap<String, Vec<&str>> = HashMap::new();
         for (notation, actions) in self.map.values() {
-            let shown = if let [a] = &actions[..] { format!("{a:?}") } else { format!("{actions:?}") };
+            let shown = if let [a] = &actions[..] {
+                format!("{a:?}")
+            } else {
+                format!("{actions:?}")
+            };
             by_action.entry(shown).or_default().push(notation);
         }
         let mut rows: Vec<_> = by_action
@@ -319,36 +356,71 @@ mod tests {
     fn notation() {
         let none = KeyModifiers::NONE;
         assert_eq!(parse("gg").unwrap(), vec![k(KeyCode::Char('g'), none); 2]);
-        assert_eq!(parse("<C-c>").unwrap(), vec![k(KeyCode::Char('c'), KeyModifiers::CONTROL)]);
+        assert_eq!(
+            parse("<C-c>").unwrap(),
+            vec![k(KeyCode::Char('c'), KeyModifiers::CONTROL)]
+        );
         assert_eq!(parse("<S-a>").unwrap(), parse("A").unwrap());
         assert_eq!(parse("<S-Tab>").unwrap(), vec![k(KeyCode::BackTab, none)]);
-        assert_eq!(parse("<S-Right>").unwrap(), vec![k(KeyCode::Right, KeyModifiers::SHIFT)]);
-        assert_eq!(parse("<Space>x").unwrap(), vec![k(KeyCode::Char(' '), none), k(KeyCode::Char('x'), none)]);
+        assert_eq!(
+            parse("<S-Right>").unwrap(),
+            vec![k(KeyCode::Right, KeyModifiers::SHIFT)]
+        );
+        assert_eq!(
+            parse("<Space>x").unwrap(),
+            vec![k(KeyCode::Char(' '), none), k(KeyCode::Char('x'), none)]
+        );
         assert_eq!(parse("<").unwrap(), parse("<lt>").unwrap());
         assert_eq!(parse("<F12>").unwrap(), vec![k(KeyCode::F(12), none)]);
         assert!(parse("<Nope>").is_err());
         assert!(parse("").is_err());
         // What terminals send for Shift+L and Shift+Tab.
-        assert_eq!(key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT)), parse("L").unwrap()[0]);
-        assert_eq!(key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)), parse("<S-Tab>").unwrap()[0]);
+        assert_eq!(
+            key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT)),
+            parse("L").unwrap()[0]
+        );
+        assert_eq!(
+            key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            parse("<S-Tab>").unwrap()[0]
+        );
     }
 
     #[test]
     fn merge_and_replace() {
-        let user = config::parse(r#"(keymap: (keys: {"n": [Next, Set(Play(On))], "q": Nop, "z": Home, "zx": Quit}))"#).unwrap().keymap;
+        let user = config::parse(
+            r#"(keymap: (keys: {"n": [Next, Set(Play(On))], "q": Nop, "z": Home, "zx": Quit}))"#,
+        )
+        .unwrap()
+        .keymap;
         let map = Keymap::new(&user).unwrap();
-        assert!(matches!(map.lookup(&parse("n").unwrap()), Lookup::Exact([Action::Next, Action::Set(Set::Play(OnOff::On))])));
+        assert!(matches!(
+            map.lookup(&parse("n").unwrap()),
+            Lookup::Exact([Action::Next, Action::Set(Set::Play(OnOff::On))])
+        ));
         assert!(matches!(map.lookup(&parse("q").unwrap()), Lookup::None));
-        assert!(matches!(map.lookup(&parse("z").unwrap()), Lookup::Prefix(Some([Action::Home]))));
-        assert!(matches!(map.lookup(&parse("j").unwrap()), Lookup::Exact([Action::Select(Dir::Down)])));
+        assert!(matches!(
+            map.lookup(&parse("z").unwrap()),
+            Lookup::Prefix(Some([Action::Home]))
+        ));
+        assert!(matches!(
+            map.lookup(&parse("j").unwrap()),
+            Lookup::Exact([Action::Select(Dir::Down)])
+        ));
 
         // Unset fields come from config.default.ron.
-        assert_eq!(Keymap::new(&config::Config::default().keymap).unwrap().timeout, config::defaults().keymap.timeout.map(Duration::from_millis));
+        assert_eq!(
+            Keymap::new(&config::Config::default().keymap)
+                .unwrap()
+                .timeout,
+            config::defaults().keymap.timeout.map(Duration::from_millis)
+        );
         assert!(config::defaults().keymap.timeout.is_some());
         let user = config::parse("(keymap: (keys: {}))").unwrap().keymap;
         assert_eq!(user.timeout, config::defaults().keymap.timeout);
 
-        let user = config::parse(r#"(keymap: (mode: Replace, timeout: None, keys: {"x": Quit}))"#).unwrap().keymap;
+        let user = config::parse(r#"(keymap: (mode: Replace, timeout: None, keys: {"x": Quit}))"#)
+            .unwrap()
+            .keymap;
         let map = Keymap::new(&user).unwrap();
         assert!(matches!(map.lookup(&parse("j").unwrap()), Lookup::None));
         assert_eq!(map.timeout, None);

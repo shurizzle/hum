@@ -41,7 +41,9 @@ impl Cache {
     pub fn global() -> &'static Cache {
         static CACHE: OnceLock<Cache> = OnceLock::new();
         CACHE.get_or_init(|| {
-            let dir = dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("hum/cache.db");
+            let dir = dirs::cache_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join("hum/cache.db");
             Self::open(&dir).unwrap_or_else(|e| {
                 log::warn!("cache disabled: {e}");
                 Self { db: None }
@@ -53,11 +55,18 @@ impl Cache {
         std::fs::create_dir_all(dir)?;
         // SAFETY: the environment is opened once per process (`global`) and never with
         // conflicting flags; other processes open it the same way.
-        let env = unsafe { EnvOpenOptions::new().max_dbs(1).map_size(1 << 30).open(dir)? };
+        let env = unsafe {
+            EnvOpenOptions::new()
+                .max_dbs(1)
+                .map_size(1 << 30)
+                .open(dir)?
+        };
         let mut wtxn = env.write_txn()?;
         let db = env.create_database(&mut wtxn, Some("cache"))?;
         wtxn.commit()?;
-        Ok(Self { db: Some((env, db)) })
+        Ok(Self {
+            db: Some((env, db)),
+        })
     }
 
     /// Cached payload when it is at most `ttl` old.
@@ -149,7 +158,9 @@ impl Cache {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn decode(raw: &[u8]) -> Option<(u64, Vec<u8>)> {
@@ -178,7 +189,10 @@ mod tests {
         let cache = Cache::open(&dir).unwrap();
         cache.store("album:1", b"payload", now() - 120);
         assert_eq!(cache.read_fresh("album:1", Duration::from_secs(60)), None);
-        assert_eq!(cache.read_fresh("album:1", Duration::from_secs(300)), Some(b"payload".to_vec()));
+        assert_eq!(
+            cache.read_fresh("album:1", Duration::from_secs(300)),
+            Some(b"payload".to_vec())
+        );
         assert_eq!(cache.read_any("album:1"), Some(b"payload".to_vec()));
         drop(cache);
         let _ = std::fs::remove_dir_all(dir);
@@ -195,7 +209,10 @@ mod tests {
         cache.store("new", &[0; 100], at - 10);
         cache.store("volume", b"\x10\0", 0);
         cache.prune(u64::MAX, 0);
-        assert!(cache.read_any("old").is_some(), "under the threshold: untouched");
+        assert!(
+            cache.read_any("old").is_some(),
+            "under the threshold: untouched"
+        );
         // Each entry is ~114 bytes: room for one.
         cache.prune(0, 150);
         assert_eq!(cache.read_any("old"), None);
@@ -217,8 +234,15 @@ mod tests {
         cache.store("cover:b", b"b", recent);
         assert_eq!(cache.read_touch("cover:a"), Some(b"a".to_vec()));
         assert_eq!(cache.read_touch("cover:b"), Some(b"b".to_vec()));
-        assert!(cache.load("cover:a").unwrap().0 >= recent, "old hit rewritten");
-        assert_eq!(cache.load("cover:b").unwrap().0, recent, "recent hit untouched");
+        assert!(
+            cache.load("cover:a").unwrap().0 >= recent,
+            "old hit rewritten"
+        );
+        assert_eq!(
+            cache.load("cover:b").unwrap().0,
+            recent,
+            "recent hit untouched"
+        );
         drop(cache);
         let _ = std::fs::remove_dir_all(dir);
     }

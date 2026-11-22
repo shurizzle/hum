@@ -33,6 +33,7 @@ ratatui-image = { version = "11", default-features = false, features = ["crosste
 regex = "1.13.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "http2", "charset", "rustls-tls-webpki-roots"] }
 # DPoP ES256 for Soloist pairing (token-exchange); ring is already the sole crypto backend.
+parking_lot = "0.12"
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1.0.229", features = ["derive"] }

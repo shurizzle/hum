@@ -27,7 +27,10 @@ const MAX_COVERS: usize = 128;
 const MAX_ENCODERS: usize = 64;
 
 enum Slot {
-    Loading { task: AbortHandle, seen: bool },
+    Loading {
+        task: AbortHandle,
+        seen: bool,
+    },
     /// The u64 is the last frame the cover was drawn in.
     Ready(DynamicImage, u64),
     Failed(u64),
@@ -46,12 +49,21 @@ pub struct Images {
 
 impl Images {
     pub fn new(tx: mpsc::UnboundedSender<Done>) -> Self {
-        Self { picker: picker(), http: reqwest::Client::new(), slots: HashMap::new(), protos: HashMap::new(), tx, frame: 0 }
+        Self {
+            picker: picker(),
+            http: reqwest::Client::new(),
+            slots: HashMap::new(),
+            protos: HashMap::new(),
+            tx,
+            frame: 0,
+        }
     }
 
     pub fn done(&mut self, done: Done) {
         match done {
-            Done::Downloaded(url, Some(image)) => _ = self.slots.insert(url, Slot::Ready(image, self.frame)),
+            Done::Downloaded(url, Some(image)) => {
+                _ = self.slots.insert(url, Slot::Ready(image, self.frame))
+            }
             Done::Downloaded(url, None) => _ = self.slots.insert(url, Slot::Failed(self.frame)),
             Done::Encoded(key, res) => {
                 if let Some((proto, _)) = self.protos.get_mut(&key) {
@@ -85,12 +97,16 @@ impl Images {
             Slot::Loading { .. } => None,
         });
         // A dropped protocol drops its sender, which ends its encoder task.
-        evict(&mut self.protos, MAX_ENCODERS, self.frame, |(_, at)| Some(*at));
+        evict(&mut self.protos, MAX_ENCODERS, self.frame, |(_, at)| {
+            Some(*at)
+        });
     }
 
     /// Draws the cover at `url` over `area`, if it is ready. Callers draw a placeholder first.
     pub fn draw(&mut self, f: &mut Frame, url: Option<&str>, area: Rect) {
-        let Some(url) = url.filter(|u| !u.is_empty()) else { return };
+        let Some(url) = url.filter(|u| !u.is_empty()) else {
+            return;
+        };
         let frame = self.frame;
         match self.slots.get_mut(url) {
             Some(Slot::Ready(image, at)) => {
@@ -102,16 +118,30 @@ impl Images {
                     let tx = self.tx.clone();
                     tokio::spawn(async move {
                         while let Some(req) = req_rx.recv().await {
-                            let Ok(Ok(res)) = tokio::task::spawn_blocking(|| req.resize_encode()).await else { continue };
+                            let Ok(Ok(res)) =
+                                tokio::task::spawn_blocking(|| req.resize_encode()).await
+                            else {
+                                continue;
+                            };
                             if tx.send(Done::Encoded(key.clone(), res)).is_err() {
                                 return;
                             }
                         }
                     });
-                    (ThreadProtocol::new(req_tx, Some(self.picker.new_resize_protocol(image.clone()))), frame)
+                    (
+                        ThreadProtocol::new(
+                            req_tx,
+                            Some(self.picker.new_resize_protocol(image.clone())),
+                        ),
+                        frame,
+                    )
                 });
                 proto.1 = frame;
-                f.render_stateful_widget(StatefulImage::default().resize(Resize::Scale(None)), area, &mut proto.0);
+                f.render_stateful_widget(
+                    StatefulImage::default().resize(Resize::Scale(None)),
+                    area,
+                    &mut proto.0,
+                );
             }
             Some(Slot::Loading { seen, .. }) => *seen = true,
             Some(Slot::Failed(at)) => *at = frame,
@@ -124,7 +154,16 @@ impl Images {
                     let bytes = match Cache::global().read_touch(&key) {
                         Some(b) => Some(b.into()),
                         None => {
-                            let b = async { http.get(&url).send().await?.error_for_status()?.bytes().await }.await.ok();
+                            let b = async {
+                                http.get(&url)
+                                    .send()
+                                    .await?
+                                    .error_for_status()?
+                                    .bytes()
+                                    .await
+                            }
+                            .await
+                            .ok();
                             if let Some(b) = &b {
                                 Cache::global().write(&key, b);
                             }
@@ -134,7 +173,9 @@ impl Images {
                     let image = match bytes {
                         Some(b) => tokio::task::spawn_blocking(move || {
                             // Small source keeps terminal encoding cheap; covers render at most ~40 cells wide.
-                            image::load_from_memory(&b).ok().map(|i| i.thumbnail(320, 320))
+                            image::load_from_memory(&b)
+                                .ok()
+                                .map(|i| i.thumbnail(320, 320))
                         })
                         .await
                         .ok()
@@ -152,11 +193,19 @@ impl Images {
 
 /// Over `cap`, removes the entries with the oldest stamps down to 3/4 of `cap` (so sorting is rare).
 /// Entries without a stamp (`None`) or drawn in frame `now` are never removed.
-fn evict<K: Clone + Eq + Hash, V>(map: &mut HashMap<K, V>, cap: usize, now: u64, stamp: impl Fn(&V) -> Option<u64>) {
+fn evict<K: Clone + Eq + Hash, V>(
+    map: &mut HashMap<K, V>,
+    cap: usize,
+    now: u64,
+    stamp: impl Fn(&V) -> Option<u64>,
+) {
     if map.len() <= cap {
         return;
     }
-    let mut old: Vec<_> = map.iter().filter_map(|(k, v)| stamp(v).filter(|&at| at < now).map(|at| (at, k.clone()))).collect();
+    let mut old: Vec<_> = map
+        .iter()
+        .filter_map(|(k, v)| stamp(v).filter(|&at| at < now).map(|at| (at, k.clone())))
+        .collect();
     old.sort_unstable_by_key(|(at, _)| *at);
     let excess = map.len() - cap * 3 / 4;
     for (_, k) in old.into_iter().take(excess) {
@@ -176,7 +225,11 @@ fn picker() -> Picker {
         .unwrap_or(FontSize::new(8, 16));
     let var = |k: &str| std::env::var(k).unwrap_or_default();
     let (term, program) = (var("TERM"), var("TERM_PROGRAM"));
-    let protocol = if !var("KITTY_WINDOW_ID").is_empty() || term == "xterm-kitty" || term == "xterm-ghostty" || program == "ghostty" {
+    let protocol = if !var("KITTY_WINDOW_ID").is_empty()
+        || term == "xterm-kitty"
+        || term == "xterm-ghostty"
+        || program == "ghostty"
+    {
         ProtocolType::Kitty
     } else if program == "iTerm.app" || program == "WezTerm" {
         // WezTerm lacks the kitty unicode placeholders ratatui-image relies on, but supports iTerm2 images.

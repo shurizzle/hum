@@ -52,7 +52,9 @@ pub fn binary() -> Option<PathBuf> {
         return p.exists().then_some(p);
     }
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join("soloist")).find(|p| p.is_file())
+    std::env::split_paths(&path)
+        .map(|d| d.join("soloist"))
+        .find(|p| p.is_file())
 }
 
 /// Soloist session + state directory (`-D`): `<config>/soloist`.
@@ -66,7 +68,10 @@ fn key_path() -> PathBuf {
 
 /// The stored developer API key, written only after a successful pairing.
 pub fn key() -> Option<String> {
-    std::fs::read_to_string(key_path()).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::fs::read_to_string(key_path())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -93,10 +98,20 @@ pub async fn setup(bin: &Path) -> Result<()> {
 
     // Session access token (subject_token) and canonical user id (addUser userName).
     let cache = auth::cache()?;
-    let creds = cache.credentials().context("not logged in: run `hum` first")?;
+    let creds = cache
+        .credentials()
+        .context("not logged in: run `hum` first")?;
     let session = Session::new(SessionConfig::default(), Some(cache));
-    session.connect(creds, true).await.context("spotify login")?;
-    let subject = session.login5().auth_token().await.context("session token")?.access_token;
+    session
+        .connect(creds, true)
+        .await
+        .context("spotify login")?;
+    let subject = session
+        .login5()
+        .auth_token()
+        .await
+        .context("session token")?
+        .access_token;
     let user = session.username();
     session.shutdown();
 
@@ -117,13 +132,20 @@ pub async fn setup(bin: &Path) -> Result<()> {
     let port = zeroconf_port(&mut child).await?;
     let http = reqwest::Client::new();
     let info = get_info(&http, port).await?;
-    let code = mint_code(&http, &subject, &info).await.context("mint auth code")?;
+    let code = mint_code(&http, &subject, &info)
+        .await
+        .context("mint auth code")?;
     eprintln!("hum: pairing Soloist...");
-    add_user(&http, port, &user, &info.auth_info_id, &code).await.context("deliver auth code")?;
+    add_user(&http, port, &user, &info.auth_info_id, &code)
+        .await
+        .context("deliver auth code")?;
 
     let status = child.wait().await?;
     if !status.success() {
-        bail!("Soloist pairing failed (exit {:?}); check the API key", status.code());
+        bail!(
+            "Soloist pairing failed (exit {:?}); check the API key",
+            status.code()
+        );
     }
     std::fs::write(key_path(), &api_key)?;
     set_mode_0600(&key_path());
@@ -166,7 +188,14 @@ struct Info {
 }
 
 async fn get_info(http: &reqwest::Client, port: u16) -> Result<Info> {
-    let v: Value = http.get(zc_url(port)).query(&[("action", "getInfo")]).send().await?.error_for_status()?.json().await?;
+    let v: Value = http
+        .get(zc_url(port))
+        .query(&[("action", "getInfo")])
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
     let auth_info = v["authInfo"].as_str().context("no authInfo")?;
     let ai = b64_decode(auth_info).context("bad authInfo")?;
     // AuthInfo { f1 auth_info_id, f2 client_id, f3 Info { f1 DpopBoundAuthCodeInfo { f1 jkt, f2 pkce_code_challenge } } }
@@ -176,7 +205,12 @@ async fn get_info(http: &reqwest::Client, port: u16) -> Result<Info> {
     let dpop = pb_field(info, 1).context("no DpopBoundAuthCodeInfo")?;
     let jkt = pb_str(dpop, 1).context("no jkt")?;
     let challenge = pb_str(dpop, 2).context("no pkce_code_challenge")?;
-    Ok(Info { auth_info_id, client_id, jkt, challenge })
+    Ok(Info {
+        auth_info_id,
+        client_id,
+        jkt,
+        challenge,
+    })
 }
 
 /// Mints the DPoP-bound authorization code via RFC 8693 token-exchange (bound to Soloist's jkt and
@@ -184,11 +218,20 @@ async fn get_info(http: &reqwest::Client, port: u16) -> Result<Info> {
 async fn mint_code(http: &reqwest::Client, subject: &str, info: &Info) -> Result<String> {
     let dpop = Dpop::new()?;
     let form = [
-        ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange"),
+        (
+            "grant_type",
+            "urn:ietf:params:oauth:grant-type:token-exchange",
+        ),
         ("client_id", auth::SESSION_CLIENT_ID),
         ("subject_token", subject),
-        ("subject_token_type", "urn:ietf:params:oauth:token-type:access_token"),
-        ("requested_token_type", "urn:spotify:params:oauth:authorization_code"),
+        (
+            "subject_token_type",
+            "urn:ietf:params:oauth:token-type:access_token",
+        ),
+        (
+            "requested_token_type",
+            "urn:spotify:params:oauth:authorization_code",
+        ),
         ("audience", &info.client_id),
         ("resource", "urn:spotify:resources:connect"),
         ("scope", "streaming"),
@@ -197,7 +240,12 @@ async fn mint_code(http: &reqwest::Client, subject: &str, info: &Info) -> Result
         ("dpop_jkt", &info.jkt),
     ];
     // First attempt primes the required DPoP nonce.
-    let send = |proof: String| http.post(TOKEN_URL).header("DPoP", proof).form(&form).send();
+    let send = |proof: String| {
+        http.post(TOKEN_URL)
+            .header("DPoP", proof)
+            .form(&form)
+            .send()
+    };
     let res = send(dpop.proof(None)?).await?;
     let (status, nonce, v) = read_token(res).await?;
     let v = if v.get("error").and_then(Value::as_str) == Some("use_dpop_nonce") {
@@ -205,23 +253,41 @@ async fn mint_code(http: &reqwest::Client, subject: &str, info: &Info) -> Result
         let res = send(dpop.proof(Some(&nonce))?).await?;
         read_token(res).await?.2
     } else if !status.is_success() {
-        bail!("token-exchange failed: {}", v.get("error").and_then(Value::as_str).unwrap_or("unknown"));
+        bail!(
+            "token-exchange failed: {}",
+            v.get("error").and_then(Value::as_str).unwrap_or("unknown")
+        );
     } else {
         v
     };
-    v["access_token"].as_str().map(str::to_string).context("no code in token-exchange response")
+    v["access_token"]
+        .as_str()
+        .map(str::to_string)
+        .context("no code in token-exchange response")
 }
 
-async fn read_token(res: reqwest::Response) -> Result<(reqwest::StatusCode, Option<String>, Value)> {
+async fn read_token(
+    res: reqwest::Response,
+) -> Result<(reqwest::StatusCode, Option<String>, Value)> {
     let status = res.status();
-    let nonce = res.headers().get("DPoP-Nonce").and_then(|h| h.to_str().ok()).map(str::to_string);
+    let nonce = res
+        .headers()
+        .get("DPoP-Nonce")
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_string);
     let v: Value = res.json().await?;
     Ok((status, nonce, v))
 }
 
 /// Delivers the auth code to Soloist as a plaintext `AuthToken` protobuf blob (no DH encryption for
 /// `tokenType=auth_token`).
-async fn add_user(http: &reqwest::Client, port: u16, user: &str, auth_info_id: &str, code: &str) -> Result<()> {
+async fn add_user(
+    http: &reqwest::Client,
+    port: u16,
+    user: &str,
+    auth_info_id: &str,
+    code: &str,
+) -> Result<()> {
     // AuthToken { f1 auth_info_id, f10 DpopBoundAuthCode { f1 value } }
     let mut blob = pb_string(1, auth_info_id);
     blob.extend(pb_len(10, &pb_string(1, code)));
@@ -235,7 +301,13 @@ async fn add_user(http: &reqwest::Client, port: u16, user: &str, auth_info_id: &
         ("deviceId", hex(&rand20())),
         ("version", "2.12.0".to_string()),
     ];
-    let v: Value = http.post(zc_url(port)).form(&form).send().await?.json().await?;
+    let v: Value = http
+        .post(zc_url(port))
+        .form(&form)
+        .send()
+        .await?
+        .json()
+        .await?;
     if v["status"].as_i64() != Some(101) {
         bail!("Soloist addUser: {}", v);
     }
@@ -263,7 +335,9 @@ pub async fn run(
     session: &Session,
 ) -> Result<()> {
     let dir = data_dir();
-    let saved = Cache::global().read_any(VOLUME_KEY).and_then(|b| Some(u16::from_le_bytes(b.try_into().ok()?)));
+    let saved = Cache::global()
+        .read_any(VOLUME_KEY)
+        .and_then(|b| Some(u16::from_le_bytes(b.try_into().ok()?)));
     // Soloist takes whole percents: `restoring` must be the value it will report back, or saving
     // never resumes.
     let pct = saved.map(|v| (v as f64 / u16::MAX as f64 * 100.0).round() as u32);
@@ -273,7 +347,16 @@ pub async fn run(
     let port_file = dir.join("ws.port");
     let _ = std::fs::remove_file(&port_file);
     let mut child = Command::new(bin)
-        .args(["-n", DEVICE_NAME, "-k", api_key, "--ws", "127.0.0.1:0", "-i", &vol])
+        .args([
+            "-n",
+            DEVICE_NAME,
+            "-k",
+            api_key,
+            "--ws",
+            "127.0.0.1:0",
+            "-i",
+            &vol,
+        ])
         .arg("-D")
         .arg(&dir)
         .stdout(Stdio::null())
@@ -284,9 +367,16 @@ pub async fn run(
 
     let port = read_ws_port(&port_file, &mut child).await?;
     let stream = TcpStream::connect(("127.0.0.1", port)).await?;
-    let (ws, _) = tokio_tungstenite::client_async(format!("ws://127.0.0.1:{port}/"), stream).await.context("connect Soloist ws")?;
+    let (ws, _) = tokio_tungstenite::client_async(format!("ws://127.0.0.1:{port}/"), stream)
+        .await
+        .context("connect Soloist ws")?;
     let (mut sink, mut ws) = ws.split();
-    sink.send(WsMessage::Text(json!({"type": "command", "command": "get_state"}).to_string().into())).await?;
+    sink.send(WsMessage::Text(
+        json!({"type": "command", "command": "get_state"})
+            .to_string()
+            .into(),
+    ))
+    .await?;
     log::info!("Soloist started on ws port {port}");
 
     // Soloist's Connect device id, for the daemon's device-targeted commands.
@@ -370,10 +460,14 @@ fn handle_event(
     muted: bool,
 ) -> bool {
     let kind = ev["type"].as_str().unwrap_or_default();
-    let loud = muted && matches!(kind, "playback_state" | "volume_changed") && ev["volume"].as_f64().is_some_and(|v| v > 0.0);
+    let loud = muted
+        && matches!(kind, "playback_state" | "volume_changed")
+        && ev["volume"].as_f64().is_some_and(|v| v > 0.0);
     match kind {
         "playback_state" => {
-            let Some(mut s) = playback_value(ev) else { return loud };
+            let Some(mut s) = playback_value(ev) else {
+                return loud;
+            };
             if muted && let Some(o) = s.as_object_mut() {
                 o.remove("volume");
             }
@@ -395,7 +489,9 @@ fn handle_event(
             match *restoring {
                 Some(v) if volume.abs_diff(v) <= 1 => *restoring = None,
                 Some(_) => {}
-                None if volume != before => Cache::global().write(VOLUME_KEY, &volume.to_le_bytes()),
+                None if volume != before => {
+                    Cache::global().write(VOLUME_KEY, &volume.to_le_bytes())
+                }
                 None => {}
             }
         }
@@ -422,7 +518,8 @@ fn handle_event(
                 if np.playing == *last_playing {
                     return false;
                 }
-                (np.position_ms, np.position_at_ms, np.playing) = (np.position(now) as u32, now, *last_playing);
+                (np.position_ms, np.position_at_ms, np.playing) =
+                    (np.position(now) as u32, now, *last_playing);
                 true
             });
         }
@@ -453,7 +550,11 @@ fn fill_missing(state: &Arc<watch::Sender<NowPlaying>>, session: &Session, filli
 /// Fills `np`'s empty track fields from `from` (same uri); true if anything changed.
 fn merge(np: &mut NowPlaying, from: &NowPlaying) -> bool {
     let before = np.clone();
-    for (dst, src) in [(&mut np.name, &from.name), (&mut np.album, &from.album), (&mut np.cover, &from.cover)] {
+    for (dst, src) in [
+        (&mut np.name, &from.name),
+        (&mut np.album, &from.album),
+        (&mut np.cover, &from.cover),
+    ] {
         if dst.is_empty() {
             dst.clone_from(src);
         }
@@ -473,9 +574,20 @@ fn playback_value(ev: &Value) -> Option<Value> {
     let uri = item["uri"].as_str()?;
     let dec = &item["decorations"];
     let name = dec["identity"]["name"].as_str().unwrap_or_default();
-    let artists: Vec<&str> = dec["creators"].as_array().into_iter().flatten().filter_map(|c| c["entity"]["decorations"]["identity"]["name"].as_str()).collect();
-    let album = dec["parent"]["entity"]["decorations"]["identity"]["name"].as_str().unwrap_or_default();
-    let cover = dec["visual_identity"]["cover"].as_array().and_then(|c| c.last()).and_then(|c| c["url"].as_str()).unwrap_or_default();
+    let artists: Vec<&str> = dec["creators"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["entity"]["decorations"]["identity"]["name"].as_str())
+        .collect();
+    let album = dec["parent"]["entity"]["decorations"]["identity"]["name"]
+        .as_str()
+        .unwrap_or_default();
+    let cover = dec["visual_identity"]["cover"]
+        .as_array()
+        .and_then(|c| c.last())
+        .and_then(|c| c["url"].as_str())
+        .unwrap_or_default();
     let duration = dec["playback"]["duration_ms"].as_f64().unwrap_or(0.0);
     let playing = ev["status"].as_str() == Some("playing");
     // Extrapolate the reported position to now.
@@ -507,8 +619,12 @@ fn translate(cmd: &Value, last_playing: bool) -> Option<Value> {
         "toggle" => Some(c(if last_playing { "pause" } else { "play" })),
         "next" => Some(c("skip_next")),
         "prev" => Some(c("skip_prev")),
-        "seek" => Some(json!({"type": "command", "command": "seek", "position_ms": cmd["arg"].as_f64()? as u64})),
-        "volume" => Some(json!({"type": "command", "command": "set_volume", "volume": (cmd["arg"].as_f64()? * 100.0).round() as u64})),
+        "seek" => Some(
+            json!({"type": "command", "command": "seek", "position_ms": cmd["arg"].as_f64()? as u64}),
+        ),
+        "volume" => Some(
+            json!({"type": "command", "command": "set_volume", "volume": (cmd["arg"].as_f64()? * 100.0).round() as u64}),
+        ),
         _ => None,
     }
 }
@@ -517,22 +633,39 @@ fn translate(cmd: &Value, last_playing: bool) -> Option<Value> {
 // shortcut: the file may exist before Soloist registers on Connect, so the first commands could
 // miss it; poll the mirrored cluster for the id if that shows up.
 fn device_id(dir: &Path) -> Option<String> {
-    std::fs::read_to_string(dir.join(".device_id")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::fs::read_to_string(dir.join(".device_id"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Kills a Soloist left by a daemon that died without reaping it: it keeps `<dir>/soloist.pid`, so
 /// a new instance on the same directory never serves, and hum would show no state (volume 0).
 async fn kill_stale(dir: &Path) {
-    let Ok(pid) = std::fs::read_to_string(dir.join("soloist.pid")) else { return };
+    let Ok(pid) = std::fs::read_to_string(dir.join("soloist.pid")) else {
+        return;
+    };
     let pid = pid.trim();
-    let alive = |out: std::io::Result<std::process::Output>| out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("soloist"));
-    if !alive(Command::new("ps").args(["-p", pid, "-o", "comm="]).output().await) {
+    let alive = |out: std::io::Result<std::process::Output>| {
+        out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("soloist"))
+    };
+    if !alive(
+        Command::new("ps")
+            .args(["-p", pid, "-o", "comm="])
+            .output()
+            .await,
+    ) {
         return;
     }
     log::warn!("killing stale Soloist {pid}");
     let _ = Command::new("kill").args(["-9", pid]).status().await;
     for _ in 0..20 {
-        if !alive(Command::new("ps").args(["-p", pid, "-o", "comm="]).output().await) {
+        if !alive(
+            Command::new("ps")
+                .args(["-p", pid, "-o", "comm="])
+                .output()
+                .await,
+        ) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -543,7 +676,9 @@ async fn read_ws_port(port_file: &Path, child: &mut tokio::process::Child) -> Re
     for _ in 0..100 {
         if let Some(status) = child.try_wait()? {
             if status.code() == Some(EXIT_EXPIRED) {
-                bail!("Soloist build expired; download a new one from https://developer.spotify.com/documentation/soloist");
+                bail!(
+                    "Soloist build expired; download a new one from https://developer.spotify.com/documentation/soloist"
+                );
             }
             bail!("Soloist exited before serving: {status:?}");
         }
@@ -572,8 +707,10 @@ impl Dpop {
     fn new() -> Result<Self> {
         let rng = ring::rand::SystemRandom::new();
         let alg = &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING;
-        let pkcs8 = ring::signature::EcdsaKeyPair::generate_pkcs8(alg, &rng).map_err(|_| anyhow::anyhow!("dpop keygen"))?;
-        let key = ring::signature::EcdsaKeyPair::from_pkcs8(alg, pkcs8.as_ref(), &rng).map_err(|_| anyhow::anyhow!("dpop key"))?;
+        let pkcs8 = ring::signature::EcdsaKeyPair::generate_pkcs8(alg, &rng)
+            .map_err(|_| anyhow::anyhow!("dpop keygen"))?;
+        let key = ring::signature::EcdsaKeyPair::from_pkcs8(alg, pkcs8.as_ref(), &rng)
+            .map_err(|_| anyhow::anyhow!("dpop key"))?;
         let pk = ring::signature::KeyPair::public_key(&key).as_ref().to_vec();
         // Uncompressed point: 0x04 || x(32) || y(32).
         anyhow::ensure!(pk.len() == 65 && pk[0] == 4, "unexpected dpop public key");
@@ -593,9 +730,19 @@ impl Dpop {
         if let Some(n) = nonce {
             payload["nonce"] = json!(n);
         }
-        let signing_input = format!("{}.{}", b64_encode(header.to_string().as_bytes(), true), b64_encode(payload.to_string().as_bytes(), true));
-        let sig = self.key.sign(&self.rng, signing_input.as_bytes()).map_err(|_| anyhow::anyhow!("dpop sign"))?;
-        Ok(format!("{signing_input}.{}", b64_encode(sig.as_ref(), true)))
+        let signing_input = format!(
+            "{}.{}",
+            b64_encode(header.to_string().as_bytes(), true),
+            b64_encode(payload.to_string().as_bytes(), true)
+        );
+        let sig = self
+            .key
+            .sign(&self.rng, signing_input.as_bytes())
+            .map_err(|_| anyhow::anyhow!("dpop sign"))?;
+        Ok(format!(
+            "{signing_input}.{}",
+            b64_encode(sig.as_ref(), true)
+        ))
     }
 }
 
@@ -613,7 +760,9 @@ fn rand20() -> [u8; 20] {
 
 fn fill_random(buf: &mut [u8]) {
     use ring::rand::SecureRandom;
-    ring::rand::SystemRandom::new().fill(buf).expect("system rng");
+    ring::rand::SystemRandom::new()
+        .fill(buf)
+        .expect("system rng");
 }
 
 fn hex(b: &[u8]) -> String {
@@ -726,7 +875,10 @@ fn b64_decode(s: &str) -> Option<Vec<u8>> {
             _ => None,
         }
     };
-    let bytes: Vec<u8> = s.bytes().filter(|&c| c != b'=' && !c.is_ascii_whitespace()).collect();
+    let bytes: Vec<u8> = s
+        .bytes()
+        .filter(|&c| c != b'=' && !c.is_ascii_whitespace())
+        .collect();
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
     for chunk in bytes.chunks(4) {
         let mut n = 0u32;
@@ -776,39 +928,112 @@ mod tests {
 
     #[test]
     fn translate_commands() {
-        assert_eq!(translate(&json!({"cmd": "toggle"}), true).unwrap()["command"], "pause");
-        assert_eq!(translate(&json!({"cmd": "toggle"}), false).unwrap()["command"], "play");
-        assert_eq!(translate(&json!({"cmd": "seek", "arg": 1500}), false).unwrap()["position_ms"], 1500);
-        assert_eq!(translate(&json!({"cmd": "volume", "arg": 0.5}), false).unwrap()["volume"], 50);
+        assert_eq!(
+            translate(&json!({"cmd": "toggle"}), true).unwrap()["command"],
+            "pause"
+        );
+        assert_eq!(
+            translate(&json!({"cmd": "toggle"}), false).unwrap()["command"],
+            "play"
+        );
+        assert_eq!(
+            translate(&json!({"cmd": "seek", "arg": 1500}), false).unwrap()["position_ms"],
+            1500
+        );
+        assert_eq!(
+            translate(&json!({"cmd": "volume", "arg": 0.5}), false).unwrap()["volume"],
+            50
+        );
     }
 
     #[test]
     fn muted_volume_reports_ask_for_zero() {
-        let state = watch::Sender::new(NowPlaying { volume: 1000, ..Default::default() });
+        let state = watch::Sender::new(NowPlaying {
+            volume: 1000,
+            ..Default::default()
+        });
         let (loaded, remote) = (AtomicBool::new(false), AtomicBool::new(false));
         let (mut playing, mut restoring) = (false, None);
         let ev = |v: f64| json!({"type": "volume_changed", "volume": v});
-        assert!(handle_event(&ev(40.0), &state, &loaded, &remote, &mut playing, &mut restoring, true));
+        assert!(handle_event(
+            &ev(40.0),
+            &state,
+            &loaded,
+            &remote,
+            &mut playing,
+            &mut restoring,
+            true
+        ));
         assert_eq!(state.borrow().volume, 1000);
-        assert!(!handle_event(&ev(0.0), &state, &loaded, &remote, &mut playing, &mut restoring, true));
+        assert!(!handle_event(
+            &ev(0.0),
+            &state,
+            &loaded,
+            &remote,
+            &mut playing,
+            &mut restoring,
+            true
+        ));
         restoring = Some(0); // no cache write
-        assert!(!handle_event(&ev(40.0), &state, &loaded, &remote, &mut playing, &mut restoring, false));
+        assert!(!handle_event(
+            &ev(40.0),
+            &state,
+            &loaded,
+            &remote,
+            &mut playing,
+            &mut restoring,
+            false
+        ));
     }
 
     #[test]
     fn play_pause_ack_updates_state() {
         let now = proto::now_ms();
-        let state = watch::Sender::new(NowPlaying { duration_ms: 100_000, position_ms: 1_000, position_at_ms: now - 2_000, playing: true, ..Default::default() });
+        let state = watch::Sender::new(NowPlaying {
+            duration_ms: 100_000,
+            position_ms: 1_000,
+            position_at_ms: now - 2_000,
+            playing: true,
+            ..Default::default()
+        });
         let (loaded, remote) = (AtomicBool::new(false), AtomicBool::new(false));
         let (mut playing, mut restoring) = (true, None);
         let ack = |c: &str| json!({"type": "command_result", "command": c});
-        handle_event(&ack("pause"), &state, &loaded, &remote, &mut playing, &mut restoring, false);
+        handle_event(
+            &ack("pause"),
+            &state,
+            &loaded,
+            &remote,
+            &mut playing,
+            &mut restoring,
+            false,
+        );
         let np = state.borrow().clone();
         assert!(!playing && !np.playing);
-        assert!((3_000..3_500).contains(&np.position_ms), "{}", np.position_ms);
-        handle_event(&ack("play"), &state, &loaded, &remote, &mut playing, &mut restoring, false);
+        assert!(
+            (3_000..3_500).contains(&np.position_ms),
+            "{}",
+            np.position_ms
+        );
+        handle_event(
+            &ack("play"),
+            &state,
+            &loaded,
+            &remote,
+            &mut playing,
+            &mut restoring,
+            false,
+        );
         assert!(playing && state.borrow().playing);
-        handle_event(&ack("seek"), &state, &loaded, &remote, &mut playing, &mut restoring, false);
+        handle_event(
+            &ack("seek"),
+            &state,
+            &loaded,
+            &remote,
+            &mut playing,
+            &mut restoring,
+            false,
+        );
         assert!(state.borrow().playing);
     }
 }

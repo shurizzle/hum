@@ -29,9 +29,16 @@ pub enum Cmd {
     /// Track metadata for the queue panel; answered with `Msg::Tracks`.
     Tracks(Vec<String>),
     /// Remove the `nth` occurrence (0-based) of `uri` from `NowPlaying.next`.
-    Unqueue { uri: String, nth: usize },
+    Unqueue {
+        uri: String,
+        nth: usize,
+    },
     /// Move the `nth` occurrence (0-based) of `uri` in `NowPlaying.next` one place down or up.
-    MoveQueue { uri: String, nth: usize, down: bool },
+    MoveQueue {
+        uri: String,
+        nth: usize,
+        down: bool,
+    },
     /// Lyrics of a track; answered with `Msg::Lyrics`.
     Lyrics(String),
     /// List the account's Connect devices; answered with `Msg::Devices`.
@@ -121,7 +128,11 @@ pub struct NowPlaying {
 impl NowPlaying {
     /// Current position in ms, extrapolated while playing.
     pub fn position(&self, now_ms: u64) -> u64 {
-        let elapsed = if self.playing { now_ms.saturating_sub(self.position_at_ms) } else { 0 };
+        let elapsed = if self.playing {
+            now_ms.saturating_sub(self.position_at_ms)
+        } else {
+            0
+        };
         (self.position_ms as u64 + elapsed).min(self.duration_ms as u64)
     }
 
@@ -140,13 +151,19 @@ pub const PROTOCOL: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Msg {
     /// First message on every connection.
-    Hello { version: String, protocol: u32 },
+    Hello {
+        version: String,
+        protocol: u32,
+    },
     State(NowPlaying),
     Tokens(Tokens),
     /// Answer to `Cmd::Tracks`, in request order, unknown tracks skipped.
     Tracks(Vec<crate::api::Item>),
     /// Answer to `Cmd::Lyrics`; no lines when the track has none.
-    Lyrics { uri: String, lines: Vec<LyricsLine> },
+    Lyrics {
+        uri: String,
+        lines: Vec<LyricsLine>,
+    },
     /// Answer to `Cmd::Devices`.
     Devices(Vec<Device>),
     /// Your Library or liked songs changed, here or on another device.
@@ -160,7 +177,10 @@ pub enum Msg {
 }
 
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 pub type Conn = Framed<UnixStream, LengthDelimitedCodec>;
@@ -171,7 +191,10 @@ pub fn socket_path() -> PathBuf {
 
 /// `name` in `$XDG_RUNTIME_DIR`, else `$TMPDIR`: socket, pid file, spawn lock.
 pub fn runtime_path(name: &str) -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join(name)
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(name)
 }
 
 pub fn frame(stream: UnixStream) -> Conn {
@@ -179,7 +202,8 @@ pub fn frame(stream: UnixStream) -> Conn {
 }
 
 pub async fn send<T: Serialize>(conn: &mut Conn, msg: &T) -> Result<()> {
-    conn.send(tokio_util::bytes::Bytes::from(serde_json::to_vec(msg)?)).await?;
+    conn.send(tokio_util::bytes::Bytes::from(serde_json::to_vec(msg)?))
+        .await?;
     Ok(())
 }
 
@@ -198,7 +222,11 @@ mod tests {
     async fn roundtrip() {
         let (a, b) = UnixStream::pair().unwrap();
         let (mut a, mut b) = (frame(a), frame(b));
-        let cmd = Cmd::Load { context_uri: Some("spotify:playlist:x".into()), tracks: vec![], track: None };
+        let cmd = Cmd::Load {
+            context_uri: Some("spotify:playlist:x".into()),
+            tracks: vec![],
+            track: None,
+        };
         send(&mut a, &cmd).await.unwrap();
         assert_eq!(recv::<Cmd>(&mut b).await.unwrap(), Some(cmd));
         drop(a);

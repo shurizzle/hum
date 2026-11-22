@@ -69,14 +69,24 @@ pub enum Cycle {
 
 #[derive(Subcommand)]
 pub enum Set {
-    Play { state: OnOff },
-    Shuffle { state: OnOff },
+    Play {
+        state: OnOff,
+    },
+    Shuffle {
+        state: OnOff,
+    },
     /// `on` repeats the context, `track` the playing track
-    Repeat { state: RepeatArg },
+    Repeat {
+        state: RepeatArg,
+    },
     /// Like/unlike the playing track
-    Like { state: OnOff },
+    Like {
+        state: OnOff,
+    },
     /// Mute keeping the volume level
-    Mute { state: OnOff },
+    Mute {
+        state: OnOff,
+    },
     /// Volume in percent; `+N`/`-N` is relative
     Volume {
         #[arg(allow_hyphen_values = true)]
@@ -141,7 +151,9 @@ impl From<RepeatArg> for Repeat {
 pub async fn run(remote: Remote) -> Result<()> {
     if let Remote::Get { json, follow, what } = remote {
         // Status lines poll this: never spawn the daemon, an idle one should be allowed to exit.
-        let Some(conn) = spawn::try_connect().await? else { bail!("daemon not running") };
+        let Some(conn) = spawn::try_connect().await? else {
+            bail!("daemon not running")
+        };
         return get(conn, what, json, follow).await;
     }
 
@@ -155,27 +167,48 @@ pub async fn run(remote: Remote) -> Result<()> {
         Remote::Queue { uri } => Cmd::Queue(spotify_uri(&uri)),
         Remote::Toggle(Toggle::Play) => Cmd::PlayPause,
         Remote::Toggle(Toggle::Shuffle) => Cmd::Shuffle(!np.shuffle),
-        Remote::Toggle(Toggle::Repeat) => Cmd::Repeat(if np.repeat == Repeat::Off { Repeat::Context } else { Repeat::Off }),
+        Remote::Toggle(Toggle::Repeat) => Cmd::Repeat(if np.repeat == Repeat::Off {
+            Repeat::Context
+        } else {
+            Repeat::Off
+        }),
         Remote::Toggle(Toggle::Mute) => Cmd::Mute(!np.muted),
         Remote::Cycle(Cycle::Repeat) => Cmd::Repeat(np.repeat.cycle()),
         Remote::Toggle(Toggle::Like) => return like(&mut conn, &mut np, None).await,
-        Remote::Set(Set::Like { state }) => return like(&mut conn, &mut np, Some(state.into())).await,
+        Remote::Set(Set::Like { state }) => {
+            return like(&mut conn, &mut np, Some(state.into())).await;
+        }
         Remote::Set(Set::Play { state }) if bool::from(state) == np.playing => return Ok(()),
         Remote::Set(Set::Play { .. }) => Cmd::PlayPause,
         Remote::Set(Set::Shuffle { state }) => Cmd::Shuffle(state.into()),
         Remote::Set(Set::Repeat { state }) => Cmd::Repeat(state.into()),
         Remote::Set(Set::Mute { state }) => Cmd::Mute(state.into()),
-        Remote::Set(Set::Volume { level }) => Cmd::Volume(volume(Level::parse("volume", &level)?, np.volume)),
-        Remote::Set(Set::Position { seconds }) => Cmd::Seek(seek(Level::parse("position", &seconds)?, &np, proto::now_ms())),
+        Remote::Set(Set::Volume { level }) => {
+            Cmd::Volume(volume(Level::parse("volume", &level)?, np.volume))
+        }
+        Remote::Set(Set::Position { seconds }) => Cmd::Seek(seek(
+            Level::parse("position", &seconds)?,
+            &np,
+            proto::now_ms(),
+        )),
         Remote::Devices => {
             for d in devices(&mut conn, &mut np).await? {
-                println!("{} {}\t{}\t{}", if d.active { "*" } else { " " }, d.name, d.kind, d.id);
+                println!(
+                    "{} {}\t{}\t{}",
+                    if d.active { "*" } else { " " },
+                    d.name,
+                    d.kind,
+                    d.id
+                );
             }
             return Ok(());
         }
         Remote::Transfer { device } => {
             let devices = devices(&mut conn, &mut np).await?;
-            let Some(d) = devices.iter().find(|d| d.id == device || d.name.eq_ignore_ascii_case(&device)) else {
+            let Some(d) = devices
+                .iter()
+                .find(|d| d.id == device || d.name.eq_ignore_ascii_case(&device))
+            else {
                 let names: Vec<_> = devices.iter().map(|d| d.name.as_str()).collect();
                 bail!("no device {device:?}; available: {}", names.join(", "));
             };
@@ -189,7 +222,13 @@ pub async fn run(remote: Remote) -> Result<()> {
 /// `hum get`: prints `what` once, or on every change with `follow`.
 async fn get(mut conn: Conn, what: Get, json: bool, follow: bool) -> Result<()> {
     let mut np = state(&mut conn).await?;
-    let mut view = View { conn, json, api: None, liked: None, queue: None };
+    let mut view = View {
+        conn,
+        json,
+        api: None,
+        liked: None,
+        queue: None,
+    };
     let mut last: Option<String> = None;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
@@ -234,7 +273,13 @@ struct View {
 impl View {
     async fn render(&mut self, what: Get, np: &mut NowPlaying) -> Result<String> {
         let json = self.json;
-        let flag = |on: bool| if json { on.to_string() } else { (if on { "on" } else { "off" }).to_string() };
+        let flag = |on: bool| {
+            if json {
+                on.to_string()
+            } else {
+                (if on { "on" } else { "off" }).to_string()
+            }
+        };
         Ok(match what {
             Get::Play => flag(np.playing),
             Get::Shuffle => flag(np.shuffle),
@@ -244,12 +289,17 @@ impl View {
                     Repeat::Context => "on",
                     Repeat::Track => "track",
                 };
-                if json { format!("\"{r}\"") } else { r.to_string() }
+                if json {
+                    format!("\"{r}\"")
+                } else {
+                    r.to_string()
+                }
             }
             Get::Like => {
                 let uri = np.uri.clone();
                 if self.liked.as_ref().is_none_or(|(u, _)| *u != uri) {
-                    let on = !uri.is_empty() && liked(&mut self.conn, np, &mut self.api, &uri).await?;
+                    let on =
+                        !uri.is_empty() && liked(&mut self.conn, np, &mut self.api, &uri).await?;
                     self.liked = Some((uri, on));
                 }
                 flag(self.liked.as_ref().is_some_and(|(_, on)| *on))
@@ -260,23 +310,39 @@ impl View {
             Get::Queue => {
                 if self.queue.as_ref().is_none_or(|(next, _)| *next != np.next) {
                     let next = np.next.clone();
-                    let tracks = match request(&mut self.conn, np, Cmd::Tracks(next.clone())).await? {
-                        Msg::Tracks(tracks) => tracks,
-                        other => bail!("unexpected reply: {other:?}"),
-                    };
+                    let tracks =
+                        match request(&mut self.conn, np, Cmd::Tracks(next.clone())).await? {
+                            Msg::Tracks(tracks) => tracks,
+                            other => bail!("unexpected reply: {other:?}"),
+                        };
                     let out = if json {
-                        let v: Vec<_> = tracks.iter().map(|t| json!({"uri": t.uri, "name": t.name, "artists": t.sub})).collect();
+                        let v: Vec<_> = tracks
+                            .iter()
+                            .map(|t| json!({"uri": t.uri, "name": t.name, "artists": t.sub}))
+                            .collect();
                         serde_json::to_string(&v)?
                     } else {
-                        tracks.iter().map(|t| format!("{} - {}", t.sub, t.name)).collect::<Vec<_>>().join("\n")
+                        tracks
+                            .iter()
+                            .map(|t| format!("{} - {}", t.sub, t.name))
+                            .collect::<Vec<_>>()
+                            .join("\n")
                     };
                     self.queue = Some((next, out));
                 }
-                self.queue.as_ref().map(|(_, out)| out.clone()).unwrap_or_default()
+                self.queue
+                    .as_ref()
+                    .map(|(_, out)| out.clone())
+                    .unwrap_or_default()
             }
             Get::Status if json => serde_json::to_string(&np)?,
             Get::Status if np.uri.is_empty() => String::new(),
-            Get::Status => format!("{} {} - {}", if np.playing { "▶" } else { "⏸" }, np.artist_line(), np.name),
+            Get::Status => format!(
+                "{} {} - {}",
+                if np.playing { "▶" } else { "⏸" },
+                np.artist_line(),
+                np.name
+            ),
         })
     }
 }
@@ -291,17 +357,31 @@ async fn like(conn: &mut Conn, np: &mut NowPlaying, on: Option<bool>) -> Result<
     let was = liked(conn, np, &mut api, &uri).await?;
     let on = on.unwrap_or(!was);
     if on != was {
-        api.as_ref().expect("set by liked").set_saved(&uri, on).await?;
+        api.as_ref()
+            .expect("set by liked")
+            .set_saved(&uri, on)
+            .await?;
     }
     Ok(())
 }
 
-async fn liked(conn: &mut Conn, np: &mut NowPlaying, api: &mut Option<Api>, uri: &str) -> Result<bool> {
+async fn liked(
+    conn: &mut Conn,
+    np: &mut NowPlaying,
+    api: &mut Option<Api>,
+    uri: &str,
+) -> Result<bool> {
     if api.is_none() {
-        let Msg::Tokens(tokens) = request(conn, np, Cmd::Token).await? else { bail!("no tokens from daemon") };
+        let Msg::Tokens(tokens) = request(conn, np, Cmd::Token).await? else {
+            bail!("no tokens from daemon")
+        };
         *api = Some(Api::new(tokens));
     }
-    let saved = api.as_ref().expect("just set").saved(&[uri.to_string()]).await?;
+    let saved = api
+        .as_ref()
+        .expect("just set")
+        .saved(&[uri.to_string()])
+        .await?;
     Ok(saved.first().copied().unwrap_or(false))
 }
 
@@ -316,17 +396,30 @@ async fn devices(conn: &mut Conn, np: &mut NowPlaying) -> Result<Vec<proto::Devi
 pub fn play(uri: &str) -> Cmd {
     let uri = spotify_uri(uri);
     if uri.starts_with("spotify:track:") {
-        Cmd::Load { context_uri: None, tracks: vec![uri], track: None }
+        Cmd::Load {
+            context_uri: None,
+            tracks: vec![uri],
+            track: None,
+        }
     } else {
-        Cmd::Load { context_uri: Some(uri), tracks: vec![], track: None }
+        Cmd::Load {
+            context_uri: Some(uri),
+            tracks: vec![],
+            track: None,
+        }
     }
 }
 
 /// `spotify:…` uris pass through; `https://open.spotify.com/[intl-xx/]<kind>/<id>?…` links become uris.
 pub fn spotify_uri(s: &str) -> String {
-    let Some(path) = s.strip_prefix("https://open.spotify.com/") else { return s.to_string() };
+    let Some(path) = s.strip_prefix("https://open.spotify.com/") else {
+        return s.to_string();
+    };
     let path = path.split(['?', '#']).next().unwrap_or_default();
-    let parts: Vec<_> = path.split('/').filter(|p| !p.is_empty() && !p.starts_with("intl-")).collect();
+    let parts: Vec<_> = path
+        .split('/')
+        .filter(|p| !p.is_empty() && !p.starts_with("intl-"))
+        .collect();
     match parts[..] {
         [kind, id] => format!("spotify:{kind}:{id}"),
         _ => s.to_string(),
@@ -404,7 +497,12 @@ pub fn volume(level: Level, current: u16) -> u16 {
 pub fn seek(level: Level, np: &NowPlaying, now_ms: u64) -> u32 {
     let current = np.position(now_ms) as i64;
     // Relative to the position in seconds, so sub-second precision survives.
-    let target = level.apply(current / 1000) * 1000 + if matches!(level, Level::Relative(_)) { current % 1000 } else { 0 };
+    let target = level.apply(current / 1000) * 1000
+        + if matches!(level, Level::Relative(_)) {
+            current % 1000
+        } else {
+            0
+        };
     target.clamp(0, np.duration_ms as i64) as u32
 }
 
@@ -434,10 +532,26 @@ mod tests {
 
     #[test]
     fn seek_positions() {
-        let np = NowPlaying { duration_ms: 200_000, position_ms: 60_000, position_at_ms: 1_000, playing: true, ..Default::default() };
+        let np = NowPlaying {
+            duration_ms: 200_000,
+            position_ms: 60_000,
+            position_at_ms: 1_000,
+            playing: true,
+            ..Default::default()
+        };
         assert_eq!(seek(l("30"), &np, 5_000), 30_000);
         assert_eq!(seek(l("+10"), &np, 5_000), 74_000);
-        assert_eq!(seek(l("-10"), &NowPlaying { playing: false, ..np.clone() }, 5_000), 50_000);
+        assert_eq!(
+            seek(
+                l("-10"),
+                &NowPlaying {
+                    playing: false,
+                    ..np.clone()
+                },
+                5_000
+            ),
+            50_000
+        );
         assert_eq!(seek(l("-100"), &np, 5_000), 0);
         assert_eq!(seek(l("999"), &np, 5_000), 200_000);
         assert!(Level::parse("position", "1:30").is_err());
@@ -446,8 +560,17 @@ mod tests {
     #[test]
     fn links_to_uris() {
         assert_eq!(spotify_uri("spotify:album:x"), "spotify:album:x");
-        assert_eq!(spotify_uri("https://open.spotify.com/track/abc?si=123"), "spotify:track:abc");
-        assert_eq!(spotify_uri("https://open.spotify.com/intl-it/playlist/p1"), "spotify:playlist:p1");
-        assert_eq!(spotify_uri("https://open.spotify.com/"), "https://open.spotify.com/");
+        assert_eq!(
+            spotify_uri("https://open.spotify.com/track/abc?si=123"),
+            "spotify:track:abc"
+        );
+        assert_eq!(
+            spotify_uri("https://open.spotify.com/intl-it/playlist/p1"),
+            "spotify:playlist:p1"
+        );
+        assert_eq!(
+            spotify_uri("https://open.spotify.com/"),
+            "https://open.spotify.com/"
+        );
     }
 }

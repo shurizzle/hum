@@ -1,7 +1,6 @@
 use std::{
     sync::{
         Arc,
-        Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -11,9 +10,12 @@ use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use librespot_core::{Session, SessionConfig, dealer::protocol::Message};
 use librespot_protocol::{
-    connect::{Capabilities, Cluster, ClusterUpdate, Device, DeviceInfo, MemberType, PutStateRequest},
+    connect::{
+        Capabilities, Cluster, ClusterUpdate, Device, DeviceInfo, MemberType, PutStateRequest,
+    },
     player::{PlayerState, ProvidedTrack},
 };
+use parking_lot::Mutex;
 use protobuf::{EnumOrUnknown, Message as _, MessageField};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
@@ -81,12 +83,22 @@ pub const ECS_VERSION: &str = "v45.2.1+wvcus";
 /// castLabs Electron install: `$HUM_ECS`, else `<data dir>/ecs` (see docs/playback.md).
 #[cfg(feature = "ecs")]
 pub fn ecs_binary() -> PathBuf {
-    let dir = std::env::var_os("HUM_ECS").map(PathBuf::from).unwrap_or_else(|| auth::data_dir().join("ecs"));
-    if cfg!(target_os = "macos") { dir.join("Electron.app/Contents/MacOS/Electron") } else { dir.join("electron") }
+    let dir = std::env::var_os("HUM_ECS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| auth::data_dir().join("ecs"));
+    if cfg!(target_os = "macos") {
+        dir.join("Electron.app/Contents/MacOS/Electron")
+    } else {
+        dir.join("electron")
+    }
 }
 
 impl Player {
-    pub fn spawn(state: watch::Sender<NowPlaying>, engine: crate::setup::Engine, session: Session) -> Self {
+    pub fn spawn(
+        state: watch::Sender<NowPlaying>,
+        engine: crate::setup::Engine,
+        session: Session,
+    ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (device_tx, device) = watch::channel(None);
         let connect = matches!(engine, crate::setup::Engine::Soloist { .. });
@@ -110,8 +122,25 @@ impl Player {
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         });
-        tokio::spawn(supervise(rx, device_tx, state, loaded.clone(), Arc::clone(&remote), engine, session.clone()));
-        Self { tx, device, http: reqwest::Client::new(), session, connect, loaded, remote, cluster }
+        tokio::spawn(supervise(
+            rx,
+            device_tx,
+            state,
+            loaded.clone(),
+            Arc::clone(&remote),
+            engine,
+            session.clone(),
+        ));
+        Self {
+            tx,
+            device,
+            http: reqwest::Client::new(),
+            session,
+            connect,
+            loaded,
+            remote,
+            cluster,
+        }
     }
 
     /// Playback runs on Connect commands (Soloist), not the Web API.
@@ -140,7 +169,11 @@ impl Player {
         self.set_queue(|next, shown| {
             let i = find(next, shown, uri, nth)?;
             let at = shown.iter().position(|&s| s == i).unwrap_or_default();
-            let Some(&j) = (if down { shown.get(at + 1) } else { at.checked_sub(1).and_then(|a| shown.get(a)) }) else {
+            let Some(&j) = (if down {
+                shown.get(at + 1)
+            } else {
+                at.checked_sub(1).and_then(|a| shown.get(a))
+            }) else {
                 return Ok(());
             };
             next.swap(i, j);
@@ -154,14 +187,25 @@ impl Player {
     /// Rewrites the active device's upcoming tracks with a Connect `set_queue` command, as the
     /// official clients do; the Web API cannot remove or reorder. `edit` gets the cluster's next
     /// tracks and the indices of those shown in `NowPlaying.next`.
-    async fn set_queue(&self, edit: impl FnOnce(&mut Vec<ProvidedTrack>, &[usize]) -> Result<()>) -> Result<()> {
-        let mut latest = self.cluster.lock().unwrap().clone().context("not connected to Spotify Connect")?;
+    async fn set_queue(
+        &self,
+        edit: impl FnOnce(&mut Vec<ProvidedTrack>, &[usize]) -> Result<()>,
+    ) -> Result<()> {
+        let mut latest = self
+            .cluster
+            .lock()
+            .clone()
+            .context("not connected to Spotify Connect")?;
         if latest.active.is_empty() {
             // Commands need a target: make hum active, then wait for the cluster to say so.
             self.activate().await?;
             for _ in 0..20 {
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                latest = self.cluster.lock().unwrap().clone().context("not connected to Spotify Connect")?;
+                latest = self
+                    .cluster
+                    .lock()
+                    .clone()
+                    .context("not connected to Spotify Connect")?;
                 if !latest.active.is_empty() {
                     break;
                 }
@@ -178,8 +222,21 @@ impl Player {
             "prev_tracks": p.prev_tracks.iter().map(track).collect::<Vec<_>>(),
             "queue_revision": p.queue_revision,
         }});
-        let path = format!("/connect-state/v1/player/command/from/{}/to/{}", latest.session.device_id(), latest.active);
-        latest.session.spclient().request(&reqwest::Method::POST, &path, None, Some(body.to_string().as_bytes())).await?;
+        let path = format!(
+            "/connect-state/v1/player/command/from/{}/to/{}",
+            latest.session.device_id(),
+            latest.active
+        );
+        latest
+            .session
+            .spclient()
+            .request(
+                &reqwest::Method::POST,
+                &path,
+                None,
+                Some(body.to_string().as_bytes()),
+            )
+            .await?;
         Ok(())
     }
 
@@ -192,14 +249,30 @@ impl Player {
     /// Sends a Connect command (`{"endpoint": ..., ...}`) to device `to`, as the official clients
     /// do; Spotify accepts it from the daemon's session, which is not a registered device.
     async fn connect_cmd(&self, to: &str, cmd: Value) -> Result<()> {
-        let path = format!("/connect-state/v1/player/command/from/{}/to/{to}", self.session.device_id());
-        self.session.spclient().request(&reqwest::Method::POST, &path, None, Some(json!({"command": cmd}).to_string().as_bytes())).await?;
+        let path = format!(
+            "/connect-state/v1/player/command/from/{}/to/{to}",
+            self.session.device_id()
+        );
+        self.session
+            .spclient()
+            .request(
+                &reqwest::Method::POST,
+                &path,
+                None,
+                Some(json!({"command": cmd}).to_string().as_bytes()),
+            )
+            .await?;
         Ok(())
     }
 
     /// The active device, else this player's.
     async fn active_device(&self) -> Result<String> {
-        let active = self.cluster.lock().unwrap().as_ref().map(|l| l.active.clone()).filter(|a| !a.is_empty());
+        let active = self
+            .cluster
+            .lock()
+            .as_ref()
+            .map(|l| l.active.clone())
+            .filter(|a| !a.is_empty());
         match active {
             Some(active) => Ok(active),
             None => self.device().await,
@@ -209,7 +282,9 @@ impl Player {
     /// Starts playback here; `body` as for `PUT /me/player/play`.
     pub async fn play(&self, body: Value) -> Result<()> {
         if self.connect {
-            return self.connect_cmd(&self.device().await?, connect_play(&body)).await;
+            return self
+                .connect_cmd(&self.device().await?, connect_play(&body))
+                .await;
         }
         self.web("/me/player/play", Some(body)).await
     }
@@ -238,9 +313,20 @@ impl Player {
     /// Web API, as the cluster does not list the SDK's own device.
     pub async fn devices(&self) -> Result<Vec<proto::Device>> {
         if self.connect {
-            return Ok(self.cluster.lock().unwrap().as_ref().context("not connected to Spotify Connect")?.devices.clone());
+            return Ok(self
+                .cluster
+                .lock()
+                .as_ref()
+                .context("not connected to Spotify Connect")?
+                .devices
+                .clone());
         }
-        let res = self.http.get(format!("{WEB_API}/me/player/devices")).bearer_auth(auth::web_token().await?).send().await?;
+        let res = self
+            .http
+            .get(format!("{WEB_API}/me/player/devices"))
+            .bearer_auth(auth::web_token().await?)
+            .send()
+            .await?;
         let v: Value = res.error_for_status()?.json().await?;
         Ok(v["devices"]
             .as_array()
@@ -259,9 +345,20 @@ impl Player {
     /// Moves playback to `device` (any Connect device of the account).
     pub async fn transfer(&self, device: &str, play: bool) -> Result<()> {
         if self.connect {
-            let path = format!("/connect-state/v1/connect/transfer/from/{}/to/{device}", self.session.device_id());
+            let path = format!(
+                "/connect-state/v1/connect/transfer/from/{}/to/{device}",
+                self.session.device_id()
+            );
             let body = json!({"transfer_options": {"restore_paused": if play { "resume" } else { "pause" }}});
-            self.session.spclient().request(&reqwest::Method::POST, &path, None, Some(body.to_string().as_bytes())).await?;
+            self.session
+                .spclient()
+                .request(
+                    &reqwest::Method::POST,
+                    &path,
+                    None,
+                    Some(body.to_string().as_bytes()),
+                )
+                .await?;
             return Ok(());
         }
         let res = self
@@ -272,16 +369,30 @@ impl Player {
             .send()
             .await?;
         if !res.status().is_success() {
-            bail!("transfer playback: {} {}", res.status(), res.text().await.unwrap_or_default());
+            bail!(
+                "transfer playback: {} {}",
+                res.status(),
+                res.text().await.unwrap_or_default()
+            );
         }
         Ok(())
     }
 
     /// Web API call for whichever device is active (no `device_id`).
     async fn web_active(&self, method: reqwest::Method, path: &str) -> Result<()> {
-        let res = self.http.request(method, format!("{WEB_API}{path}")).bearer_auth(auth::web_token().await?).header("content-length", "0").send().await?;
+        let res = self
+            .http
+            .request(method, format!("{WEB_API}{path}"))
+            .bearer_auth(auth::web_token().await?)
+            .header("content-length", "0")
+            .send()
+            .await?;
         if !res.status().is_success() {
-            bail!("{path}: {} {}", res.status(), res.text().await.unwrap_or_default());
+            bail!(
+                "{path}: {} {}",
+                res.status(),
+                res.text().await.unwrap_or_default()
+            );
         }
         Ok(())
     }
@@ -323,7 +434,11 @@ impl Player {
         };
         let res = req.send().await?;
         if !res.status().is_success() {
-            bail!("{path}: {} {}", res.status(), res.text().await.unwrap_or_default());
+            bail!(
+                "{path}: {} {}",
+                res.status(),
+                res.text().await.unwrap_or_default()
+            );
         }
         Ok(())
     }
@@ -343,7 +458,12 @@ async fn supervise(
         let result = match &engine {
             #[cfg(feature = "ecs")]
             crate::setup::Engine::Ecs => run_once(&mut rx, &device, &state, &loaded, &remote).await,
-            crate::setup::Engine::Soloist { bin, key } => crate::soloist::run(&mut rx, &device, &state, &loaded, &remote, bin, key, &session).await,
+            crate::setup::Engine::Soloist { bin, key } => {
+                crate::soloist::run(
+                    &mut rx, &device, &state, &loaded, &remote, bin, key, &session,
+                )
+                .await
+            }
         };
         if let Err(e) = result {
             log::error!("player: {e:#}");
@@ -367,7 +487,9 @@ async fn run_once(
     loaded: &AtomicBool,
     remote: &AtomicBool,
 ) -> Result<()> {
-    let dir = dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("hum/player");
+    let dir = dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("hum/player");
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("main.js"), MAIN_JS)?;
     std::fs::write(dir.join("player.html"), PLAYER_HTML)?;
@@ -396,7 +518,9 @@ async fn run_once(
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     // Volume kept across restarts in the disk cache (`volume`, u16 LE, no expiry). Saving starts
     // once the SDK reports the restored value, so its initial 0.5 never overwrites it.
-    let saved = Cache::global().read_any(VOLUME_KEY).and_then(|b| Some(u16::from_le_bytes(b.try_into().ok()?)));
+    let saved = Cache::global()
+        .read_any(VOLUME_KEY)
+        .and_then(|b| Some(u16::from_le_bytes(b.try_into().ok()?)));
     let mut restoring = saved;
     log::info!("player started: {}", bin.display());
 
@@ -466,27 +590,43 @@ struct Mirror {
 impl Mirror {
     async fn run(&self) -> Result<()> {
         let cache = auth::cache()?;
-        let creds = cache.credentials().context("not logged in: run `hum` first")?;
+        let creds = cache
+            .credentials()
+            .context("not logged in: run `hum` first")?;
         let session = Session::new(SessionConfig::default(), Some(cache));
-        session.connect(creds, false).await.context("spotify login")?;
+        session
+            .connect(creds, false)
+            .await
+            .context("spotify login")?;
         let res = self.follow(&session).await;
-        *self.cluster.lock().unwrap() = None;
+        *self.cluster.lock() = None;
         session.shutdown();
         res
     }
 
     async fn follow(&self, session: &Session) -> Result<()> {
-        let mut ids = session.dealer().listen_for("hm://pusher/v1/connections/", |m: Message| {
-            Ok(m.headers.get("Spotify-Connection-Id").cloned().unwrap_or_default())
-        })?;
-        let mut updates = session.dealer().listen_for("hm://connect-state/v1/cluster", Message::from_raw::<ClusterUpdate>)?;
+        let mut ids =
+            session
+                .dealer()
+                .listen_for("hm://pusher/v1/connections/", |m: Message| {
+                    Ok(m.headers
+                        .get("Spotify-Connection-Id")
+                        .cloned()
+                        .unwrap_or_default())
+                })?;
+        let mut updates = session.dealer().listen_for(
+            "hm://connect-state/v1/cluster",
+            Message::from_raw::<ClusterUpdate>,
+        )?;
         // Liked songs/albums/artists/shows (`hm://collection/<kind>/<user>`), the playlist rootlist and
         // playlist contents.
         let uri = |m: Message| Ok(m.uri);
         let mut library = futures_util::stream::select_all([
             session.dealer().listen_for("hm://collection/", uri)?,
             session.dealer().listen_for("hm://playlist/v2/user/", uri)?,
-            session.dealer().listen_for("hm://playlist/v2/playlist/", uri)?,
+            session
+                .dealer()
+                .listen_for("hm://playlist/v2/playlist/", uri)?,
         ]);
         session.dealer().start().await?;
         let req = PutStateRequest {
@@ -496,7 +636,11 @@ impl Mirror {
                     name: "hum".into(),
                     device_id: session.device_id().to_string(),
                     client_id: session.client_id(),
-                    capabilities: MessageField::some(Capabilities { hidden: true, is_observable: true, ..Default::default() }),
+                    capabilities: MessageField::some(Capabilities {
+                        hidden: true,
+                        is_observable: true,
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -527,7 +671,7 @@ impl Mirror {
                     }
                 },
             };
-            *self.cluster.lock().unwrap() = Some(Latest {
+            *self.cluster.lock() = Some(Latest {
                 session: session.clone(),
                 active: cluster.active_device_id.clone(),
                 state: cluster.player_state.clone().unwrap_or_default(),
@@ -542,7 +686,11 @@ impl Mirror {
     async fn apply(&self, session: &Session, mut cluster: Cluster) -> Result<()> {
         let active = cluster.active_device_id.clone();
         let p = cluster.player_state.take().unwrap_or_default();
-        let next: Vec<String> = shown(&p.next_tracks, &p.track.uri).into_iter().map(|i| p.next_tracks[i].uri.clone()).take(MAX_URIS).collect();
+        let next: Vec<String> = shown(&p.next_tracks, &p.track.uri)
+            .into_iter()
+            .map(|i| p.next_tracks[i].uri.clone())
+            .take(MAX_URIS)
+            .collect();
         let shuffle = p.options.shuffling_context;
         let repeat = match (p.options.repeating_track, p.options.repeating_context) {
             (true, _) => proto::Repeat::Track,
@@ -569,7 +717,11 @@ impl Mirror {
         // An idle hum with its last state wins over an empty cluster; only the queue and options
         // come from the cluster then (Soloist restores the track itself, without them), and the
         // position while paused: Soloist reports a restored track at 0 but resumes it from here.
-        if p.track.uri.is_empty() || (!remote && !self.state.borrow().uri.is_empty() && self.loaded.load(Ordering::SeqCst)) {
+        if p.track.uri.is_empty()
+            || (!remote
+                && !self.state.borrow().uri.is_empty()
+                && self.loaded.load(Ordering::SeqCst))
+        {
             if !remote && self.state.borrow().uri == p.track.uri {
                 let position = p.position_as_of_timestamp.clamp(0, p.duration.max(0)) as u32;
                 self.state.send_if_modified(|s| {
@@ -595,9 +747,17 @@ impl Mirror {
         let mut np = if self.state.borrow().uri == uri {
             self.state.borrow().clone()
         } else {
-            log::info!("connect state: {uri} in {:?} at {position} ms on {active:?}", p.context_uri);
+            log::info!(
+                "connect state: {uri} in {:?} at {position} ms on {active:?}",
+                p.context_uri
+            );
             // Episodes are not mirrored (no track metadata).
-            let Some(track) = crate::meta::tracks(session, std::slice::from_ref(&uri)).await?.pop() else { return Ok(()) };
+            let Some(track) = crate::meta::tracks(session, std::slice::from_ref(&uri))
+                .await?
+                .pop()
+            else {
+                return Ok(());
+            };
             track.now_playing()
         };
         np.context = p.context_uri;
@@ -607,7 +767,11 @@ impl Mirror {
         np.next = next;
         (np.shuffle, np.repeat) = (shuffle, repeat);
         self.state.send_if_modified(|s| {
-            let np = NowPlaying { volume: s.volume, muted: s.muted, ..np };
+            let np = NowPlaying {
+                volume: s.volume,
+                muted: s.muted,
+                ..np
+            };
             let changed = *s != np;
             *s = np;
             changed
@@ -639,7 +803,12 @@ fn connect_play(body: &Value) -> Value {
     let context = match body["context_uri"].as_str() {
         Some(uri) => json!({"uri": uri, "url": format!("context://{uri}")}),
         None => {
-            let tracks: Vec<Value> = body["uris"].as_array().into_iter().flatten().map(|u| json!({"uri": u})).collect();
+            let tracks: Vec<Value> = body["uris"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|u| json!({"uri": u}))
+                .collect();
             json!({"pages": [{"tracks": tracks}]})
         }
     };
@@ -658,14 +827,22 @@ fn connect_play(body: &Value) -> Value {
 fn shown(next: &[ProvidedTrack], current: &str) -> Vec<usize> {
     next.iter()
         .enumerate()
-        .filter(|(_, t)| (t.uri.starts_with("spotify:track:") || t.uri.starts_with("spotify:episode:")) && t.uri != current)
+        .filter(|(_, t)| {
+            (t.uri.starts_with("spotify:track:") || t.uri.starts_with("spotify:episode:"))
+                && t.uri != current
+        })
         .map(|(i, _)| i)
         .collect()
 }
 
 /// Index in `next` of the `nth` shown occurrence of `uri`.
 fn find(next: &[ProvidedTrack], shown: &[usize], uri: &str, nth: usize) -> Result<usize> {
-    shown.iter().copied().filter(|&i| next[i].uri == uri).nth(nth).context("track no longer queued")
+    shown
+        .iter()
+        .copied()
+        .filter(|&i| next[i].uri == uri)
+        .nth(nth)
+        .context("track no longer queued")
 }
 
 /// Body for `PUT /me/player/play` starting `track` inside `context` (may be empty), followed by
@@ -675,11 +852,23 @@ pub fn play_body(context: &str, track: &str, position_ms: u32, next: &[String]) 
     // Artists answer "Can't have offset for context type: ARTIST", so they play as their "Popular"
     // list, like the web player does. Pseudo contexts like `spotify:webapi` (playback started from
     // `uris`) answer "Invalid context uri"; there the track plays with `next` as an explicit list.
-    let artist_list = context.strip_prefix("spotify:artist:").map(|id| format!("{ARTIST_POPULAR}{id}"));
+    let artist_list = context
+        .strip_prefix("spotify:artist:")
+        .map(|id| format!("{ARTIST_POPULAR}{id}"));
     let context = artist_list.as_deref().unwrap_or(context);
-    let offsettable = ["spotify:playlist:", "spotify:album:", "spotify:show:", "spotify:list:"].iter().any(|p| context.starts_with(p));
+    let offsettable = [
+        "spotify:playlist:",
+        "spotify:album:",
+        "spotify:show:",
+        "spotify:list:",
+    ]
+    .iter()
+    .any(|p| context.starts_with(p));
     if !offsettable {
-        let uris: Vec<&str> = std::iter::once(track).chain(next.iter().map(String::as_str)).take(MAX_URIS).collect();
+        let uris: Vec<&str> = std::iter::once(track)
+            .chain(next.iter().map(String::as_str))
+            .take(MAX_URIS)
+            .collect();
         json!({"uris": uris, "position_ms": position_ms})
     } else {
         json!({"context_uri": context, "offset": {"uri": track}, "position_ms": position_ms})
@@ -694,7 +883,14 @@ pub(crate) fn apply(np: &mut NowPlaying, s: &Value) -> bool {
     if let Some(uri) = str("uri") {
         next.uri = uri;
         next.name = str("name").unwrap_or_default();
-        next.artists = s.get("artists").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+        next.artists = s
+            .get("artists")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
         next.album = str("album").unwrap_or_default();
         next.cover = str("cover").unwrap_or_default();
         next.context = str("context").unwrap_or_default();
@@ -724,7 +920,10 @@ mod tests {
         let s = json!({"uri": "spotify:track:1", "name": "One", "artists": ["A", "B"], "album": "X", "cover": "c",
                        "duration_ms": 1000, "position_ms": 10, "playing": true, "volume": 0.5});
         assert!(apply(&mut np, &s));
-        assert_eq!((np.name.as_str(), np.position_ms, np.playing, np.volume), ("One", 10, true, u16::MAX / 2));
+        assert_eq!(
+            (np.name.as_str(), np.position_ms, np.playing, np.volume),
+            ("One", 10, true, u16::MAX / 2)
+        );
         assert_eq!(np.artists, ["A", "B"]);
         assert!(!apply(&mut np, &s));
         assert!(apply(&mut np, &json!({"volume": 1.0})));
@@ -735,8 +934,17 @@ mod tests {
 
     #[test]
     fn shown_skips_pseudo_and_current() {
-        let t = |uri: &str| ProvidedTrack { uri: uri.into(), ..Default::default() };
-        let next = [t("spotify:track:a"), t("spotify:delimiter"), t("spotify:track:cur"), t("spotify:track:b"), t("spotify:track:a")];
+        let t = |uri: &str| ProvidedTrack {
+            uri: uri.into(),
+            ..Default::default()
+        };
+        let next = [
+            t("spotify:track:a"),
+            t("spotify:delimiter"),
+            t("spotify:track:cur"),
+            t("spotify:track:b"),
+            t("spotify:track:a"),
+        ];
         let shown = shown(&next, "spotify:track:cur");
         assert_eq!(shown, [0, 3, 4]);
         assert_eq!(find(&next, &shown, "spotify:track:a", 1).unwrap(), 4);
@@ -752,19 +960,35 @@ mod tests {
                    "options": {"skip_to": {"track_uri": "spotify:track:t"}, "seek_to": 45000}})
         );
         assert_eq!(
-            connect_play(&json!({"uris": ["spotify:track:a", "spotify:track:b"], "position_ms": 0})),
+            connect_play(
+                &json!({"uris": ["spotify:track:a", "spotify:track:b"], "position_ms": 0})
+            ),
             json!({"endpoint": "play", "context": {"pages": [{"tracks": [{"uri": "spotify:track:a"}, {"uri": "spotify:track:b"}]}]}, "options": {}})
         );
     }
 
     #[test]
     fn restored_playback_resumes_in_context() {
-        let np = NowPlaying { uri: "spotify:track:t".into(), context: "spotify:playlist:p".into(), position_ms: 45000, ..Default::default() };
+        let np = NowPlaying {
+            uri: "spotify:track:t".into(),
+            context: "spotify:playlist:p".into(),
+            position_ms: 45000,
+            ..Default::default()
+        };
         let next = ["spotify:track:n".to_string()];
-        assert_eq!(play_body(&np.context, &np.uri, np.position_ms, &next), json!({"context_uri": "spotify:playlist:p", "offset": {"uri": "spotify:track:t"}, "position_ms": 45000}));
-        assert_eq!(play_body("spotify:artist:a", "spotify:track:t", 0, &[])["context_uri"], format!("{ARTIST_POPULAR}a"));
+        assert_eq!(
+            play_body(&np.context, &np.uri, np.position_ms, &next),
+            json!({"context_uri": "spotify:playlist:p", "offset": {"uri": "spotify:track:t"}, "position_ms": 45000})
+        );
+        assert_eq!(
+            play_body("spotify:artist:a", "spotify:track:t", 0, &[])["context_uri"],
+            format!("{ARTIST_POPULAR}a")
+        );
         for context in ["", "spotify:webapi"] {
-            assert_eq!(play_body(context, "spotify:track:t", 5, &next), json!({"uris": ["spotify:track:t", "spotify:track:n"], "position_ms": 5}));
+            assert_eq!(
+                play_body(context, "spotify:track:t", 5, &next),
+                json!({"uris": ["spotify:track:t", "spotify:track:n"], "position_ms": 5})
+            );
         }
     }
 }

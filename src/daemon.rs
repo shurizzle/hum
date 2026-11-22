@@ -55,7 +55,10 @@ impl log::Log for Logger {
             // Every like also sends a `…/json` collection push that librespot cannot parse (JSON,
             // base64 expected); the plain one next to it reaches `Player::follow`. Noise, not an error.
             if !(r.target() == "librespot_core::dealer" && msg.contains("hm://collection/")) {
-                let _ = events().send(Msg::Log(format!("{}: {msg}", r.target().rsplit("::").next().unwrap_or(""))));
+                let _ = events().send(Msg::Log(format!(
+                    "{}: {msg}",
+                    r.target().rsplit("::").next().unwrap_or("")
+                )));
             }
         }
         self.0.log(r);
@@ -67,7 +70,8 @@ impl log::Log for Logger {
 }
 
 pub fn init_logger() {
-    let inner = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
+    let inner =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
     log::set_max_level(inner.filter());
     events();
     let _ = log::set_boxed_logger(Box::new(Logger(inner)));
@@ -95,15 +99,24 @@ pub async fn run() -> Result<()> {
         let mut tick = tokio::time::interval(crate::cache::PRUNE_EVERY);
         loop {
             tick.tick().await;
-            let _ = tokio::task::spawn_blocking(|| crate::cache::Cache::global().prune(crate::cache::PRUNE_ABOVE, crate::cache::PRUNE_TO)).await;
+            let _ = tokio::task::spawn_blocking(|| {
+                crate::cache::Cache::global()
+                    .prune(crate::cache::PRUNE_ABOVE, crate::cache::PRUNE_TO)
+            })
+            .await;
         }
     });
 
     // The librespot session only serves browsing tokens (login5, client token); playback is the player's.
     let cache = auth::cache()?;
-    let creds = cache.credentials().context("not logged in: run `hum` first")?;
+    let creds = cache
+        .credentials()
+        .context("not logged in: run `hum` first")?;
     let session = Session::new(SessionConfig::default(), Some(cache));
-    session.connect(creds, true).await.context("spotify login")?;
+    session
+        .connect(creds, true)
+        .await
+        .context("spotify login")?;
     {
         // Product info arrives asynchronously after login; account type helps diagnose playback refusals.
         let session = session.clone();
@@ -111,8 +124,18 @@ pub async fn run() -> Result<()> {
             tokio::time::sleep(Duration::from_secs(3)).await;
             let mut attrs: Vec<_> = session.user_data().attributes.into_iter().collect();
             attrs.sort();
-            let get = |k: &str| attrs.iter().find(|(a, _)| a == k).map_or("?", |(_, v)| v.as_str());
-            log::info!("account: type={} catalogue={} country={}", get("type"), get("catalogue"), session.country());
+            let get = |k: &str| {
+                attrs
+                    .iter()
+                    .find(|(a, _)| a == k)
+                    .map_or("?", |(_, v)| v.as_str())
+            };
+            log::info!(
+                "account: type={} catalogue={} country={}",
+                get("type"),
+                get("catalogue"),
+                session.country()
+            );
             log::debug!("user attributes: {attrs:?}");
         });
     }
@@ -178,7 +201,14 @@ pub async fn run() -> Result<()> {
 
 async fn client(stream: UnixStream, shared: &Shared) -> Result<()> {
     let mut conn = proto::frame(stream);
-    proto::send(&mut conn, &Msg::Hello { version: proto::VERSION.into(), protocol: proto::PROTOCOL }).await?;
+    proto::send(
+        &mut conn,
+        &Msg::Hello {
+            version: proto::VERSION.into(),
+            protocol: proto::PROTOCOL,
+        },
+    )
+    .await?;
     let mut state = shared.state.clone();
     let mut events = events().subscribe();
     let snapshot = state.borrow_and_update().clone();
@@ -209,13 +239,23 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
     let player = &shared.player;
     match cmd {
         // A loose track plays inside its radio, so music goes on after it like in the official clients.
-        Cmd::Load { context_uri: None, tracks, track: None } if tracks.len() == 1 && tracks[0].starts_with("spotify:track:") => {
+        Cmd::Load {
+            context_uri: None,
+            tracks,
+            track: None,
+        } if tracks.len() == 1 && tracks[0].starts_with("spotify:track:") => {
             let played = async {
                 let radio = crate::meta::radio(&shared.session, &tracks[0]).await?;
                 // Connect silently stops on an offset missing from the context (the radio may open
                 // with another release of the seed), so there the radio plays from its start.
-                let offset = if player.connect() { Value::Null } else { json!({"uri": tracks[0]}) };
-                player.play(json!({"context_uri": radio, "offset": offset})).await
+                let offset = if player.connect() {
+                    Value::Null
+                } else {
+                    json!({"uri": tracks[0]})
+                };
+                player
+                    .play(json!({"context_uri": radio, "offset": offset}))
+                    .await
             };
             if let Err(e) = played.await {
                 // The radio may not start with its seed, or not exist: play the track alone.
@@ -223,7 +263,11 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
                 player.play(json!({"uris": tracks})).await?;
             }
         }
-        Cmd::Load { context_uri, tracks, track } => {
+        Cmd::Load {
+            context_uri,
+            tracks,
+            track,
+        } => {
             let body = match context_uri {
                 Some(uri) => match track {
                     Some(track) => crate::player::play_body(&uri, &track, 0, &[]),
@@ -235,13 +279,41 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
         }
         // Another device is playing: control it like the official clients do, without taking over.
         Cmd::PlayPause if player.remote() => {
-            let (cmd, path) = if shared.state.borrow().playing { ("pause", "/me/player/pause") } else { ("resume", "/me/player/play") };
-            player.on_active(json!({"endpoint": cmd}), reqwest::Method::PUT, path).await?;
+            let (cmd, path) = if shared.state.borrow().playing {
+                ("pause", "/me/player/pause")
+            } else {
+                ("resume", "/me/player/play")
+            };
+            player
+                .on_active(json!({"endpoint": cmd}), reqwest::Method::PUT, path)
+                .await?;
         }
-        Cmd::Next if player.remote() => player.on_active(json!({"endpoint": "skip_next"}), reqwest::Method::POST, "/me/player/next").await?,
-        Cmd::Prev if player.remote() => player.on_active(json!({"endpoint": "skip_prev"}), reqwest::Method::POST, "/me/player/previous").await?,
+        Cmd::Next if player.remote() => {
+            player
+                .on_active(
+                    json!({"endpoint": "skip_next"}),
+                    reqwest::Method::POST,
+                    "/me/player/next",
+                )
+                .await?
+        }
+        Cmd::Prev if player.remote() => {
+            player
+                .on_active(
+                    json!({"endpoint": "skip_prev"}),
+                    reqwest::Method::POST,
+                    "/me/player/previous",
+                )
+                .await?
+        }
         Cmd::Seek(ms) if player.remote() => {
-            player.on_active(json!({"endpoint": "seek_to", "value": ms}), reqwest::Method::PUT, &format!("/me/player/seek?position_ms={ms}")).await?
+            player
+                .on_active(
+                    json!({"endpoint": "seek_to", "value": ms}),
+                    reqwest::Method::PUT,
+                    &format!("/me/player/seek?position_ms={ms}"),
+                )
+                .await?
         }
         Cmd::PlayPause if !player.loaded() => {
             // Nothing loaded in the SDK yet: play the restored last playback from where it stopped.
@@ -264,7 +336,12 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
         Cmd::Mute(_) if player.remote() => {}
         Cmd::Mute(on) => player.command("mute", json!(on)),
         Cmd::Shuffle(on) => {
-            player.here(&[json!({"endpoint": "set_shuffling_context", "value": on})], &format!("/me/player/shuffle?state={on}")).await?
+            player
+                .here(
+                    &[json!({"endpoint": "set_shuffling_context", "value": on})],
+                    &format!("/me/player/shuffle?state={on}"),
+                )
+                .await?
         }
         Cmd::Repeat(r) => {
             let (state, context, track) = match r {
@@ -276,7 +353,9 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
                 json!({"endpoint": "set_repeating_context", "value": context}),
                 json!({"endpoint": "set_repeating_track", "value": track}),
             ];
-            player.here(&cmds, &format!("/me/player/repeat?state={state}")).await?
+            player
+                .here(&cmds, &format!("/me/player/repeat?state={state}"))
+                .await?
         }
         Cmd::Queue(uri) => {
             // Queueing needs an active device ("NO_ACTIVE_DEVICE" from the Web API otherwise).
@@ -288,7 +367,10 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
                 player.activate().await?;
                 // The transfer takes a moment to register; until then the queue answers 404.
                 let mut tries = 0;
-                while let Err(e) = player.on_active(cmd.clone(), reqwest::Method::POST, &path).await {
+                while let Err(e) = player
+                    .on_active(cmd.clone(), reqwest::Method::POST, &path)
+                    .await
+                {
                     tries += 1;
                     if tries == 10 {
                         return Err(e);
@@ -299,7 +381,9 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
         }
         Cmd::Tracks(uris) => {
             let tracks = crate::meta::tracks(&shared.session, &uris).await?;
-            return Ok(Some(Msg::Tracks(tracks.iter().map(crate::meta::Track::item).collect())));
+            return Ok(Some(Msg::Tracks(
+                tracks.iter().map(crate::meta::Track::item).collect(),
+            )));
         }
         Cmd::Lyrics(uri) => {
             let lines = crate::meta::lyrics(&shared.session, &uri).await?;
@@ -315,7 +399,11 @@ async fn handle(cmd: Cmd, shared: &Shared) -> Result<Option<Msg>> {
         Cmd::Token => {
             let access_token = shared.session.login5().auth_token().await?.access_token;
             let client_token = shared.session.spclient().client_token().await?;
-            return Ok(Some(Msg::Tokens(Tokens { access_token, client_token, user: shared.session.username() })));
+            return Ok(Some(Msg::Tokens(Tokens {
+                access_token,
+                client_token,
+                user: shared.session.username(),
+            })));
         }
         Cmd::Shutdown => shared.shutdown.notify_one(),
     }

@@ -68,7 +68,9 @@ pub async fn ensure_engine() -> Result<Engine> {
         Ok(Engine::Ecs)
     }
     #[cfg(not(feature = "ecs"))]
-    anyhow::bail!("`soloist` not found on PATH nor in $HUM_SOLOIST (see docs/playback.md); or build hum with the `ecs` feature")
+    anyhow::bail!(
+        "`soloist` not found on PATH nor in $HUM_SOLOIST (see docs/playback.md); or build hum with the `ecs` feature"
+    )
 }
 
 #[cfg(feature = "ecs")]
@@ -92,11 +94,15 @@ pub async fn ensure_ecs() -> Result<()> {
 fn url(os: &str, arch: &str, version: &str) -> Result<String> {
     Ok(match (os, arch) {
         ("macos", "aarch64" | "x86_64") => {
-            format!("https://github.com/shurizzle/hum/releases/download/ecs-{version}/hum-ecs-macos-{arch}.zip")
+            format!(
+                "https://github.com/shurizzle/hum/releases/download/ecs-{version}/hum-ecs-macos-{arch}.zip"
+            )
         }
         ("linux", "x86_64" | "aarch64") => {
             let arch = if arch == "x86_64" { "x64" } else { "arm64" };
-            format!("https://github.com/castlabs/electron-releases/releases/download/{version}/electron-{version}-linux-{arch}.zip")
+            format!(
+                "https://github.com/castlabs/electron-releases/releases/download/{version}/electron-{version}-linux-{arch}.zip"
+            )
         }
         _ => bail!("no Electron build for {os}/{arch}"),
     })
@@ -112,7 +118,10 @@ async fn install(dir: &Path) -> Result<()> {
     // Leftovers of an interrupted install.
     let _ = std::fs::remove_dir_all(&staging);
 
-    let res = reqwest::get(&url).await?.error_for_status().with_context(|| format!("download {url}"))?;
+    let res = reqwest::get(&url)
+        .await?
+        .error_for_status()
+        .with_context(|| format!("download {url}"))?;
     let total = res.content_length().unwrap_or(0);
     let mut file = std::fs::File::create(&zip)?;
     let (mut done, mut shown) = (0u64, u64::MAX);
@@ -124,7 +133,10 @@ async fn install(dir: &Path) -> Result<()> {
         let pct = (done * 100).checked_div(total).unwrap_or(0);
         if pct != shown {
             shown = pct;
-            eprint!("\rhum: downloading Electron {version} ({} MB): {pct}%", total / 1_000_000);
+            eprint!(
+                "\rhum: downloading Electron {version} ({} MB): {pct}%",
+                total / 1_000_000
+            );
         }
     }
     eprintln!();
@@ -141,7 +153,9 @@ async fn install(dir: &Path) -> Result<()> {
         c.arg("-q").arg(&zip).arg("-d").arg(&staging);
         c
     };
-    let status = extract.status().context("extract Electron (is `unzip` installed?)")?;
+    let status = extract
+        .status()
+        .context("extract Electron (is `unzip` installed?)")?;
     if !status.success() {
         bail!("extract Electron: {status}");
     }
@@ -160,9 +174,20 @@ mod tests {
     #[test]
     fn urls_per_platform() {
         let v = "v45.2.1+wvcus";
-        assert_eq!(url("macos", "aarch64", v).unwrap(), "https://github.com/shurizzle/hum/releases/download/ecs-v45.2.1+wvcus/hum-ecs-macos-aarch64.zip");
-        assert!(url("macos", "x86_64", v).unwrap().ends_with("/hum-ecs-macos-x86_64.zip"));
-        assert!(url("linux", "x86_64", v).unwrap().ends_with("/v45.2.1+wvcus/electron-v45.2.1+wvcus-linux-x64.zip"));
+        assert_eq!(
+            url("macos", "aarch64", v).unwrap(),
+            "https://github.com/shurizzle/hum/releases/download/ecs-v45.2.1+wvcus/hum-ecs-macos-aarch64.zip"
+        );
+        assert!(
+            url("macos", "x86_64", v)
+                .unwrap()
+                .ends_with("/hum-ecs-macos-x86_64.zip")
+        );
+        assert!(
+            url("linux", "x86_64", v)
+                .unwrap()
+                .ends_with("/v45.2.1+wvcus/electron-v45.2.1+wvcus-linux-x64.zip")
+        );
         assert!(url("windows", "x86_64", v).is_err());
     }
 }

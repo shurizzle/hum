@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 use crossterm::{
     event::{
-        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-        MouseButton, MouseEvent, MouseEventKind,
+        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
+        KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
 };
@@ -21,8 +21,8 @@ use crate::{
     cli::{self, OnOff},
     proto::{self, Cmd, Conn, Msg, NowPlaying},
 };
-use keys::{Action, Dir, Keymap, LikeTarget, PlayTarget, QueueTarget, Set, Step, Toggle, Vertical};
 use images::{Done, Images};
+use keys::{Action, Dir, Keymap, LikeTarget, PlayTarget, QueueTarget, Set, Step, Toggle, Vertical};
 
 const TOKEN_REFRESH: Duration = Duration::from_secs(30 * 60);
 /// Upcoming tracks shown; each uncached one costs a Web API call.
@@ -52,7 +52,13 @@ pub struct Sec {
 
 impl Sec {
     fn new(title: impl Into<String>, kind: Kind, items: Vec<Item>) -> Self {
-        Self { title: title.into(), kind, items, off: 0, cols: 1 }
+        Self {
+            title: title.into(),
+            kind,
+            items,
+            off: 0,
+            cols: 1,
+        }
     }
 
     /// Item to land on when entering this section from above or below.
@@ -60,7 +66,9 @@ impl Sec {
         match self.kind {
             Kind::Shelf => self.off,
             Kind::List if !from_above => self.items.len() - 1,
-            Kind::Grid if !from_above => (self.items.len() - 1) / self.cols.max(1) * self.cols.max(1),
+            Kind::Grid if !from_above => {
+                (self.items.len() - 1) / self.cols.max(1) * self.cols.max(1)
+            }
             _ => 0,
         }
     }
@@ -87,7 +95,16 @@ impl Page {
     fn new(title: impl Into<String>, header: Option<Item>, secs: Vec<Sec>) -> Self {
         let context = header.as_ref().map(|h| h.uri.clone());
         let secs: Vec<Sec> = secs.into_iter().filter(|s| !s.items.is_empty()).collect();
-        Self { title: title.into(), header, context, secs, sel: (0, 0), top: 0, loading: false, focus: None }
+        Self {
+            title: title.into(),
+            header,
+            context,
+            secs,
+            sel: (0, 0),
+            top: 0,
+            loading: false,
+            focus: None,
+        }
     }
 
     pub fn selected(&self) -> Option<&Item> {
@@ -115,13 +132,19 @@ impl Page {
 
     /// To the first or last section, landing like `vertical` does (`gg` / `G`).
     fn edge(&mut self, last: bool) {
-        if let Some(s) = if last { self.secs.len().checked_sub(1) } else { (!self.secs.is_empty()).then_some(0) } {
+        if let Some(s) = if last {
+            self.secs.len().checked_sub(1)
+        } else {
+            (!self.secs.is_empty()).then_some(0)
+        } {
             self.sel = (s, self.secs[s].entry(!last));
         }
     }
 
     fn horizontal(&mut self, right: bool) {
-        let Some(sec) = self.secs.get(self.sel.0).filter(|s| s.kind != Kind::List) else { return };
+        let Some(sec) = self.secs.get(self.sel.0).filter(|s| s.kind != Kind::List) else {
+            return;
+        };
         if right && self.sel.1 + 1 < sec.items.len() {
             self.sel.1 += 1;
         } else if !right && self.sel.1 > 0 {
@@ -133,7 +156,10 @@ impl Page {
 /// Adds items as a track list first, then one shelf per entity kind, like Spotify's artist pages. Items already present are skipped, so pages can arrive incrementally.
 fn add(secs: &mut Vec<Sec>, items: Vec<Item>, songs: &str) {
     for item in items {
-        if secs.iter().any(|s| s.items.iter().any(|i| i.uri == item.uri)) {
+        if secs
+            .iter()
+            .any(|s| s.items.iter().any(|i| i.uri == item.uri))
+        {
             continue;
         }
         if matches!(item.kind(), "track" | "episode") {
@@ -191,9 +217,18 @@ pub enum Hit {
 }
 
 enum Loaded {
-    Page { generation: u64, push: bool, page: Page },
+    Page {
+        generation: u64,
+        push: bool,
+        page: Page,
+    },
     /// Next chunk of the page opened at `generation`.
-    Fill { generation: u64, items: Vec<Item>, more: bool, root: Option<Item> },
+    Fill {
+        generation: u64,
+        items: Vec<Item>,
+        more: bool,
+        root: Option<Item>,
+    },
     Library(Vec<Item>),
     /// Liked state of tracks, albums, artists; also restores it when a like fails.
     Saved(Vec<(String, bool)>),
@@ -264,7 +299,15 @@ pub async fn run(mut conn: Conn, keymap: Keymap) -> Result<()> {
         match proto::recv::<Msg>(&mut conn).await? {
             Some(Msg::Tokens(t)) => break t,
             Some(Msg::State(s)) => np = s,
-            Some(Msg::Hello { .. } | Msg::Tracks(_) | Msg::Devices(_) | Msg::Lyrics { .. } | Msg::Library | Msg::Playlist(_) | Msg::Log(_)) => {}
+            Some(
+                Msg::Hello { .. }
+                | Msg::Tracks(_)
+                | Msg::Devices(_)
+                | Msg::Lyrics { .. }
+                | Msg::Library
+                | Msg::Playlist(_)
+                | Msg::Log(_),
+            ) => {}
             // Usually the network (tokens need Spotify); the daemon keeps running, so ask again.
             Some(Msg::Error(e)) => {
                 eprintln!("daemon: {e}; retrying in 3 s (Ctrl-C to quit)");
@@ -320,7 +363,10 @@ pub async fn run(mut conn: Conn, keymap: Keymap) -> Result<()> {
     // Resume like the desktop app: the playing context, else the last page, else home.
     let playing = Some(Item::from_context(&app.np.context)).filter(Item::browsable);
     app.resume_pending = playing.is_none();
-    match playing.map(|i| (i, Some(app.np.uri.clone()))).or_else(|| last_page().map(|i| (i, None))) {
+    match playing
+        .map(|i| (i, Some(app.np.uri.clone())))
+        .or_else(|| last_page().map(|i| (i, None)))
+    {
         Some((item, focus)) => app.open_at(item, focus),
         None => app.home(),
     }
@@ -393,7 +439,7 @@ async fn event_loop(
                             app.load_queue();
                         }
                     }
-                    Some(Msg::Tokens(t)) => *app.api.tokens.write().unwrap() = t,
+                    Some(Msg::Tokens(t)) => *app.api.tokens.write() = t,
                     Some(Msg::Lyrics { uri, lines }) => {
                         if uri == app.np.uri {
                             app.lyrics = Some((uri, lines));
@@ -483,7 +529,11 @@ impl App {
     {
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let _ = tx.send(fetch.await.unwrap_or_else(|e| Loaded::Status(format!("{e:#}"))));
+            let _ = tx.send(
+                fetch
+                    .await
+                    .unwrap_or_else(|e| Loaded::Status(format!("{e:#}"))),
+            );
         })
         .abort_handle()
     }
@@ -504,7 +554,13 @@ impl App {
     {
         let generation = self.navigate();
         self.status = "loading…".into();
-        self.page_task = Some(self.spawn(async move { Ok(Loaded::Page { generation, push, page: fetch.await? }) }));
+        self.page_task = Some(self.spawn(async move {
+            Ok(Loaded::Page {
+                generation,
+                push,
+                page: fetch.await?,
+            })
+        }));
     }
 
     fn home(&mut self) {
@@ -531,7 +587,9 @@ impl App {
 
     /// Fetches the liked state of the `uris` not known yet.
     fn check_saved(&mut self, mut uris: Vec<String>) {
-        uris.retain(|u| saveable(u) && !u.starts_with("spotify:playlist:") && !self.saved.contains_key(u));
+        uris.retain(|u| {
+            saveable(u) && !u.starts_with("spotify:playlist:") && !self.saved.contains_key(u)
+        });
         uris.dedup();
         if uris.is_empty() {
             return;
@@ -545,7 +603,15 @@ impl App {
         let api = self.api.clone();
         for chunk in uris.chunks(50).map(<[String]>::to_vec) {
             let api = api.clone();
-            self.spawn(async move { Ok(Loaded::Saved(chunk.iter().cloned().zip(api.saved(&chunk).await?).collect())) });
+            self.spawn(async move {
+                Ok(Loaded::Saved(
+                    chunk
+                        .iter()
+                        .cloned()
+                        .zip(api.saved(&chunk).await?)
+                        .collect(),
+                ))
+            });
         }
     }
 
@@ -557,16 +623,31 @@ impl App {
     /// screen. Other known hearts are forgotten and asked again when shown.
     fn library_changed(&mut self) {
         self.load_library();
-        let page = self.page().into_iter().flat_map(|p| p.header.iter().chain(p.secs.iter().flat_map(|s| &s.items)));
-        let shown: std::collections::HashSet<String> = page.map(|i| i.uri.clone()).chain([self.np.uri.clone()]).filter(|u| self.saved.contains_key(u)).collect();
+        let page = self
+            .page()
+            .into_iter()
+            .flat_map(|p| p.header.iter().chain(p.secs.iter().flat_map(|s| &s.items)));
+        let shown: std::collections::HashSet<String> = page
+            .map(|i| i.uri.clone())
+            .chain([self.np.uri.clone()])
+            .filter(|u| self.saved.contains_key(u))
+            .collect();
         self.saved.retain(|u, _| shown.contains(u));
         self.fetch_saved(shown.into_iter().collect());
     }
 
     /// The open playlist changed (`Msg::Playlist`): reload it in place, keeping the selection.
     fn playlist_changed(&mut self, uri: &str) {
-        let Some(page) = self.page().filter(|p| p.header.as_ref().is_some_and(|h| h.uri == uri)) else { return };
-        let (header, focus) = (page.header.clone().unwrap(), page.selected().map(|i| i.uri.clone()));
+        let Some(page) = self
+            .page()
+            .filter(|p| p.header.as_ref().is_some_and(|h| h.uri == uri))
+        else {
+            return;
+        };
+        let (header, focus) = (
+            page.header.clone().unwrap(),
+            page.selected().map(|i| i.uri.clone()),
+        );
         let panel = self.focus;
         self.stack.pop();
         self.open_at(header, focus);
@@ -587,8 +668,16 @@ impl App {
         } else {
             self.saved.insert(uri.clone(), !was);
         }
-        let place = if uri.starts_with("spotify:track:") { "Liked Songs" } else { "Your Library" };
-        self.status = if was { format!("Removed from {place}") } else { format!("Added to {place}") };
+        let place = if uri.starts_with("spotify:track:") {
+            "Liked Songs"
+        } else {
+            "Your Library"
+        };
+        self.status = if was {
+            format!("Removed from {place}")
+        } else {
+            format!("Added to {place}")
+        };
         let (api, tx) = (self.api.clone(), self.tx.clone());
         tokio::spawn(async move {
             let res = api.set_saved(&uri, !was).await;
@@ -600,7 +689,9 @@ impl App {
             }
             // Albums, artists, shows and playlists live in Your Library; a failed playlist change
             // also needs it to drop the shown placeholder.
-            if (res.is_ok() || playlist) && let Ok(items) = api.library().await {
+            if (res.is_ok() || playlist)
+                && let Ok(items) = api.library().await
+            {
                 let _ = tx.send(Loaded::Library(items));
             }
         });
@@ -619,7 +710,11 @@ impl App {
     }
 
     fn show_queue_window(&mut self) {
-        self.queue = self.queue_window().iter().filter_map(|u| self.queue_cache.get(u).cloned()).collect();
+        self.queue = self
+            .queue_window()
+            .iter()
+            .filter_map(|u| self.queue_cache.get(u).cloned())
+            .collect();
         self.queue_sel = self.queue_sel.min(self.queue.len().saturating_sub(1));
     }
 
@@ -632,13 +727,19 @@ impl App {
     /// Scrolls the lyrics by `lines` from what was last drawn.
     fn scroll_lyrics(&mut self, lines: isize) {
         let len = self.lyrics.as_ref().map_or(0, |(_, l)| l.len());
-        let top = self.lyrics_top.saturating_add_signed(lines).min(len.saturating_sub(1));
+        let top = self
+            .lyrics_top
+            .saturating_add_signed(lines)
+            .min(len.saturating_sub(1));
         self.lyrics_scroll = Some((top, Instant::now()));
     }
 
     /// Asks the daemon for the playing track's lyrics while they are shown and not loaded yet.
     fn request_lyrics(&mut self) {
-        let loaded = self.lyrics.as_ref().is_some_and(|(uri, _)| *uri == self.np.uri);
+        let loaded = self
+            .lyrics
+            .as_ref()
+            .is_some_and(|(uri, _)| *uri == self.np.uri);
         if self.show_lyrics && !self.np.uri.is_empty() && !loaded {
             self.lyrics = None;
             self.lyrics_scroll = None;
@@ -654,7 +755,9 @@ impl App {
 
     fn pick_device(&mut self, i: usize) -> Vec<Cmd> {
         self.devices_open = false;
-        let Some(d) = self.devices.as_ref().and_then(|d| d.get(i)) else { return vec![] };
+        let Some(d) = self.devices.as_ref().and_then(|d| d.get(i)) else {
+            return vec![];
+        };
         if d.active {
             return vec![];
         }
@@ -663,18 +766,30 @@ impl App {
     }
 
     fn move_queue(&mut self, down: bool) {
-        self.queue_sel = if down { (self.queue_sel + 1).min(self.queue.len().saturating_sub(1)) } else { self.queue_sel.saturating_sub(1) };
+        self.queue_sel = if down {
+            (self.queue_sel + 1).min(self.queue.len().saturating_sub(1))
+        } else {
+            self.queue_sel.saturating_sub(1)
+        };
     }
 
     /// Tab order: library, main, queue (side panels only when shown).
     fn cycle_focus(&mut self, forward: bool) {
-        let order: Vec<Focus> = [(self.show_library, Focus::Library), (true, Focus::Main), (self.show_queue, Focus::Queue)]
-            .into_iter()
-            .filter_map(|(shown, f)| shown.then_some(f))
-            .collect();
+        let order: Vec<Focus> = [
+            (self.show_library, Focus::Library),
+            (true, Focus::Main),
+            (self.show_queue, Focus::Queue),
+        ]
+        .into_iter()
+        .filter_map(|(shown, f)| shown.then_some(f))
+        .collect();
         let i = order.iter().position(|f| *f == self.focus).unwrap_or(1);
         let n = order.len();
-        self.focus = order[if forward { (i + 1) % n } else { (i + n - 1) % n }];
+        self.focus = order[if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        }];
     }
 
     fn toggle_library(&mut self) {
@@ -693,7 +808,11 @@ impl App {
 
     fn load_queue(&mut self) {
         self.show_queue_window();
-        let missing: Vec<String> = self.queue_window().into_iter().filter(|u| !self.queue_cache.contains_key(u)).collect();
+        let missing: Vec<String> = self
+            .queue_window()
+            .into_iter()
+            .filter(|u| !self.queue_cache.contains_key(u))
+            .collect();
         if missing.is_empty() {
             return;
         }
@@ -704,7 +823,15 @@ impl App {
         let api = self.api.clone();
         self.load(true, async move {
             let secs = api.search(&term).await?.into_iter().map(|(title, items)| {
-                Sec::new(title, if title == "Songs" { Kind::List } else { Kind::Shelf }, items)
+                Sec::new(
+                    title,
+                    if title == "Songs" {
+                        Kind::List
+                    } else {
+                        Kind::Shelf
+                    },
+                    items,
+                )
             });
             Ok(Page::new(format!("Search: {term}"), None, secs.collect()))
         });
@@ -732,12 +859,26 @@ impl App {
                 let (items, more, root) = match api.open(&item.uri, offset, limit).await {
                     Ok(page) => page,
                     Err(e) => {
-                        let _ = tx.send(Loaded::Fill { generation, items: vec![], more: false, root: None });
+                        let _ = tx.send(Loaded::Fill {
+                            generation,
+                            items: vec![],
+                            more: false,
+                            root: None,
+                        });
                         let _ = tx.send(Loaded::Status(format!("{e:#}")));
                         return;
                     }
                 };
-                if tx.send(Loaded::Fill { generation, items, more, root }).is_err() || !more {
+                if tx
+                    .send(Loaded::Fill {
+                        generation,
+                        items,
+                        more,
+                        root,
+                    })
+                    .is_err()
+                    || !more
+                {
                     return;
                 }
                 offset += limit;
@@ -755,8 +896,16 @@ impl App {
                 vec![]
             }
             "track" | "episode" => vec![match context {
-                Some(context) => Cmd::Load { context_uri: Some(context), tracks: vec![], track: Some(item.uri) },
-                None => Cmd::Load { context_uri: None, tracks: vec![item.uri], track: None },
+                Some(context) => Cmd::Load {
+                    context_uri: Some(context),
+                    tracks: vec![],
+                    track: Some(item.uri),
+                },
+                None => Cmd::Load {
+                    context_uri: None,
+                    tracks: vec![item.uri],
+                    track: None,
+                },
             }],
             _ => vec![play_context(item.uri)],
         }
@@ -807,7 +956,11 @@ impl App {
     }
 
     fn move_library(&mut self, down: bool) {
-        self.lib_sel = if down { (self.lib_sel + 1).min(self.library.len().saturating_sub(1)) } else { self.lib_sel.saturating_sub(1) };
+        self.lib_sel = if down {
+            (self.lib_sel + 1).min(self.library.len().saturating_sub(1))
+        } else {
+            self.lib_sel.saturating_sub(1)
+        };
     }
 
     /// Handles a key press; returns the commands to send to the daemon.
@@ -818,7 +971,13 @@ impl App {
         }
         if self.devices_open {
             match key.code {
-                KeyCode::Char('j') | KeyCode::Down => self.dev_sel = (self.dev_sel + 1).min(self.devices.as_ref().map_or(0, |d| d.len().saturating_sub(1))),
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.dev_sel = (self.dev_sel + 1).min(
+                        self.devices
+                            .as_ref()
+                            .map_or(0, |d| d.len().saturating_sub(1)),
+                    )
+                }
                 KeyCode::Char('k') | KeyCode::Up => self.dev_sel = self.dev_sel.saturating_sub(1),
                 KeyCode::Enter => return self.pick_device(self.dev_sel),
                 KeyCode::Esc | KeyCode::Char('c' | 'q') => self.devices_open = false,
@@ -852,7 +1011,8 @@ impl App {
         while !self.pending.is_empty() {
             match self.keymap.lookup(&self.pending) {
                 keys::Lookup::Prefix(_) => {
-                    self.key_deadline = self.keymap.timeout.map(|t| tokio::time::Instant::now() + t);
+                    self.key_deadline =
+                        self.keymap.timeout.map(|t| tokio::time::Instant::now() + t);
                     break;
                 }
                 keys::Lookup::Exact(actions) => {
@@ -864,7 +1024,9 @@ impl App {
                 keys::Lookup::None => {
                     let last = self.pending.pop().expect("not empty");
                     if !self.pending.is_empty() {
-                        if let keys::Lookup::Exact(a) | keys::Lookup::Prefix(Some(a)) = self.keymap.lookup(&self.pending) {
+                        if let keys::Lookup::Exact(a) | keys::Lookup::Prefix(Some(a)) =
+                            self.keymap.lookup(&self.pending)
+                        {
                             let a = a.to_vec();
                             self.run_actions(&a, &mut cmds);
                         }
@@ -880,7 +1042,9 @@ impl App {
     fn key_timeout(&mut self) -> Vec<Cmd> {
         self.key_deadline = None;
         let mut cmds = vec![];
-        if let keys::Lookup::Prefix(Some(a)) | keys::Lookup::Exact(a) = self.keymap.lookup(&std::mem::take(&mut self.pending)) {
+        if let keys::Lookup::Prefix(Some(a)) | keys::Lookup::Exact(a) =
+            self.keymap.lookup(&std::mem::take(&mut self.pending))
+        {
             let a = a.to_vec();
             self.run_actions(&a, &mut cmds);
         }
@@ -918,9 +1082,15 @@ impl App {
             Action::Toggle(Toggle::Queue) => self.toggle_queue(),
             Action::Toggle(Toggle::Library) => self.toggle_library(),
             Action::Toggle(Toggle::Lyrics) => self.toggle_lyrics(),
-            Action::Select(d @ (Dir::Down | Dir::Up)) if main && self.show_lyrics => self.scroll_lyrics(if *d == Dir::Down { 1 } else { -1 }),
+            Action::Select(d @ (Dir::Down | Dir::Up)) if main && self.show_lyrics => {
+                self.scroll_lyrics(if *d == Dir::Down { 1 } else { -1 })
+            }
             Action::Select(d @ (Dir::First | Dir::Last)) if main && self.show_lyrics => {
-                self.scroll_lyrics(if *d == Dir::Last { isize::MAX } else { isize::MIN });
+                self.scroll_lyrics(if *d == Dir::Last {
+                    isize::MAX
+                } else {
+                    isize::MIN
+                });
             }
             Action::Back if self.show_lyrics => self.show_lyrics = false,
             Action::Back => self.back(),
@@ -935,7 +1105,9 @@ impl App {
             }
             Action::Select(d @ (Dir::Down | Dir::Up)) if queue => self.move_queue(*d == Dir::Down),
             Action::Select(Dir::First) if queue => self.queue_sel = 0,
-            Action::Select(Dir::Last) if queue => self.queue_sel = self.queue.len().saturating_sub(1),
+            Action::Select(Dir::Last) if queue => {
+                self.queue_sel = self.queue.len().saturating_sub(1)
+            }
             Action::Select(Dir::First) => self.lib_sel = 0,
             Action::Select(Dir::Last) => self.lib_sel = self.library.len().saturating_sub(1),
             Action::Select(Dir::Left) if queue => self.focus = Focus::Main,
@@ -944,19 +1116,33 @@ impl App {
             Action::Select(Dir::Left | Dir::Right) => {}
             Action::Move(v) if queue => {
                 let down = *v == Vertical::Down;
-                let (i, j) = (self.queue_sel, if down { self.queue_sel + 1 } else { self.queue_sel.wrapping_sub(1) });
+                let (i, j) = (
+                    self.queue_sel,
+                    if down {
+                        self.queue_sel + 1
+                    } else {
+                        self.queue_sel.wrapping_sub(1)
+                    },
+                );
                 if let (Some(item), true) = (self.queue.get(i).cloned(), j < self.queue.len()) {
                     let nth = self.queue[..i].iter().filter(|q| q.uri == item.uri).count();
                     // Shown moved at once; the cluster update confirms it (an error restores it).
                     self.queue.swap(i, j);
                     self.queue_sel = j;
-                    return Some(Cmd::MoveQueue { uri: item.uri, nth, down });
+                    return Some(Cmd::MoveQueue {
+                        uri: item.uri,
+                        nth,
+                        down,
+                    });
                 }
             }
             Action::Unqueue if queue => {
                 if let Some(item) = self.queue.get(self.queue_sel).cloned() {
                     // Occurrence among equal uris before it: the same track can be queued twice.
-                    let nth = self.queue[..self.queue_sel].iter().filter(|i| i.uri == item.uri).count();
+                    let nth = self.queue[..self.queue_sel]
+                        .iter()
+                        .filter(|i| i.uri == item.uri)
+                        .count();
                     // Shown gone at once; the cluster update confirms it (or brings it back on failure).
                     self.queue.remove(self.queue_sel);
                     self.queue_sel = self.queue_sel.min(self.queue.len().saturating_sub(1));
@@ -972,10 +1158,20 @@ impl App {
                     self.outbox.extend(cmds);
                 }
             }
-            Action::Play(PlayTarget::Selected) => return self.selected().map(|item| play_context(item.uri)),
-            Action::Play(PlayTarget::Page) => return self.page().and_then(|p| p.context.clone()).map(play_context),
+            Action::Play(PlayTarget::Selected) => {
+                return self.selected().map(|item| play_context(item.uri));
+            }
+            Action::Play(PlayTarget::Page) => {
+                return self
+                    .page()
+                    .and_then(|p| p.context.clone())
+                    .map(play_context);
+            }
             Action::Queue(QueueTarget::Selected) => {
-                if let Some(item) = self.selected().filter(|i| matches!(i.kind(), "track" | "episode")) {
+                if let Some(item) = self
+                    .selected()
+                    .filter(|i| matches!(i.kind(), "track" | "episode"))
+                {
                     // Failures come back as `Msg::Error` and replace this.
                     self.status = format!("Added to queue: {}", item.name);
                     return Some(Cmd::Queue(item.uri));
@@ -986,14 +1182,26 @@ impl App {
             Action::Next => return Some(Cmd::Next),
             Action::Prev => return Some(Cmd::Prev),
             Action::Toggle(Toggle::Play) => return Some(Cmd::PlayPause),
-            Action::Set(Set::Play(on)) => return (bool::from(*on) != self.np.playing).then_some(Cmd::PlayPause),
-            Action::Toggle(Toggle::Shuffle) => return self.action(&Action::Set(Set::Shuffle(if self.shuffle { OnOff::Off } else { OnOff::On }))),
+            Action::Set(Set::Play(on)) => {
+                return (bool::from(*on) != self.np.playing).then_some(Cmd::PlayPause);
+            }
+            Action::Toggle(Toggle::Shuffle) => {
+                return self.action(&Action::Set(Set::Shuffle(if self.shuffle {
+                    OnOff::Off
+                } else {
+                    OnOff::On
+                })));
+            }
             Action::Set(Set::Shuffle(on)) => {
                 self.shuffle = (*on).into();
                 return Some(Cmd::Shuffle(self.shuffle));
             }
             Action::Toggle(Toggle::Repeat) => {
-                self.repeat = if self.repeat == proto::Repeat::Off { proto::Repeat::Context } else { proto::Repeat::Off };
+                self.repeat = if self.repeat == proto::Repeat::Off {
+                    proto::Repeat::Context
+                } else {
+                    proto::Repeat::Off
+                };
                 return Some(Cmd::Repeat(self.repeat));
             }
             Action::Cycle(cli::Cycle::Repeat) => {
@@ -1010,14 +1218,21 @@ impl App {
                 }
             }
             Action::Set(Set::Like(t, on)) => {
-                if let Some(uri) = self.like_target(*t).filter(|uri| self.liked(uri) == Some(!bool::from(*on))) {
+                if let Some(uri) = self
+                    .like_target(*t)
+                    .filter(|uri| self.liked(uri) == Some(!bool::from(*on)))
+                {
                     self.toggle_like(uri);
                 }
             }
             Action::Toggle(Toggle::Mute) => return Some(Cmd::Mute(!self.np.muted)),
             Action::Set(Set::Mute(on)) => return Some(Cmd::Mute((*on).into())),
-            Action::Set(Set::Volume(v)) => return Some(Cmd::Volume(cli::volume(*v, self.np.volume))),
-            Action::Set(Set::Position(p)) => return Some(Cmd::Seek(cli::seek(*p, &self.np, proto::now_ms()))),
+            Action::Set(Set::Volume(v)) => {
+                return Some(Cmd::Volume(cli::volume(*v, self.np.volume)));
+            }
+            Action::Set(Set::Position(p)) => {
+                return Some(Cmd::Seek(cli::seek(*p, &self.np, proto::now_ms())));
+            }
         }
         None
     }
@@ -1031,7 +1246,8 @@ impl App {
         }
         if self.devices_open && matches!(m.kind, MouseEventKind::Down(_)) {
             // A row transfers; anything else just closes the picker.
-            if let Some((_, Hit::Device(i))) = self.hits.iter().rev().find(|(r, _)| at(r)).cloned() {
+            if let Some((_, Hit::Device(i))) = self.hits.iter().rev().find(|(r, _)| at(r)).cloned()
+            {
                 return self.pick_device(i);
             }
             self.devices_open = false;
@@ -1053,12 +1269,16 @@ impl App {
                 vec![]
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                let Some((rect, hit)) = self.hits.iter().rev().find(|(r, _)| at(r)).cloned() else { return vec![] };
+                let Some((rect, hit)) = self.hits.iter().rev().find(|(r, _)| at(r)).cloned() else {
+                    return vec![];
+                };
                 let ratio = (m.column - rect.x) as f64 / rect.width.max(1) as f64;
                 match hit {
                     Hit::Main(s, i) => {
                         self.focus = Focus::Main;
-                        let Some(page) = self.stack.last_mut() else { return vec![] };
+                        let Some(page) = self.stack.last_mut() else {
+                            return vec![];
+                        };
                         let again = page.sel == (s, i);
                         page.sel = (s, i);
                         let item = page.secs[s].items[i].clone();
@@ -1096,7 +1316,9 @@ impl App {
                         }
                         return vec![cmd];
                     }
-                    Hit::Seek => return vec![Cmd::Seek((ratio * self.np.duration_ms as f64) as u32)],
+                    Hit::Seek => {
+                        return vec![Cmd::Seek((ratio * self.np.duration_ms as f64) as u32)];
+                    }
                     Hit::Volume => return vec![Cmd::Volume((ratio * u16::MAX as f64) as u16)],
                     Hit::Mute => return vec![Cmd::Mute(!self.np.muted)],
                     Hit::Search => self.search = Some(String::new()),
@@ -1123,14 +1345,20 @@ fn last_page() -> Option<Item> {
 /// Remembers the open playlist/album/artist for the next start; home clears it.
 fn save_last_page(item: Option<&Item>) {
     let _ = match item {
-        Some(item) => serde_json::to_vec(item).map_err(std::io::Error::other).and_then(|b| std::fs::write(last_page_path(), b)),
+        Some(item) => serde_json::to_vec(item)
+            .map_err(std::io::Error::other)
+            .and_then(|b| std::fs::write(last_page_path(), b)),
         None => std::fs::remove_file(last_page_path()),
     };
 }
 
 /// Liked state shown for `uri`; `None` for what cannot be liked. A free function so the renderer
 /// can call it while a page is borrowed.
-fn liked(saved: &std::collections::HashMap<String, bool>, library: &[Item], uri: &str) -> Option<bool> {
+fn liked(
+    saved: &std::collections::HashMap<String, bool>,
+    library: &[Item],
+    uri: &str,
+) -> Option<bool> {
     if !saveable(uri) {
         return None;
     }
@@ -1143,11 +1371,19 @@ fn liked(saved: &std::collections::HashMap<String, bool>, library: &[Item], uri:
 /// What the web player's heart works on.
 fn saveable(uri: &str) -> bool {
     let mut parts = uri.split(':');
-    parts.next() == Some("spotify") && matches!(parts.next(), Some("track" | "album" | "artist" | "playlist" | "show" | "episode"))
+    parts.next() == Some("spotify")
+        && matches!(
+            parts.next(),
+            Some("track" | "album" | "artist" | "playlist" | "show" | "episode")
+        )
 }
 
 fn play_context(uri: String) -> Cmd {
-    Cmd::Load { context_uri: Some(uri), tracks: vec![], track: None }
+    Cmd::Load {
+        context_uri: Some(uri),
+        tracks: vec![],
+        track: None,
+    }
 }
 
 #[cfg(test)]
@@ -1155,12 +1391,21 @@ mod tests {
     use super::*;
 
     fn item(uri: &str) -> Item {
-        Item { name: uri.into(), ..Item::from_uri(uri) }
+        Item {
+            name: uri.into(),
+            ..Item::from_uri(uri)
+        }
     }
 
     #[test]
     fn group_and_navigate() {
-        let items = ["spotify:track:1", "spotify:album:a", "spotify:track:2", "spotify:artist:x", "spotify:album:b"];
+        let items = [
+            "spotify:track:1",
+            "spotify:album:a",
+            "spotify:track:2",
+            "spotify:artist:x",
+            "spotify:album:b",
+        ];
         let mut secs = vec![];
         add(&mut secs, items.map(item).to_vec(), "Songs");
         let mut page = Page::new("t", None, secs);
@@ -1177,9 +1422,22 @@ mod tests {
         add(&mut secs, vec![item("spotify:album:a")], "Songs");
         assert!(secs[0].kind == Kind::Shelf);
 
-        let mut grid = Sec::new("", Kind::Grid, (0..7).map(|i| item(&format!("spotify:album:{i}"))).collect());
+        let mut grid = Sec::new(
+            "",
+            Kind::Grid,
+            (0..7)
+                .map(|i| item(&format!("spotify:album:{i}")))
+                .collect(),
+        );
         grid.cols = 4;
-        let mut page = Page::new("t", None, vec![grid, Sec::new("S", Kind::Shelf, vec![item("spotify:album:z")])]);
+        let mut page = Page::new(
+            "t",
+            None,
+            vec![
+                grid,
+                Sec::new("S", Kind::Shelf, vec![item("spotify:album:z")]),
+            ],
+        );
         page.horizontal(true);
         page.vertical(true);
         assert_eq!(page.sel, (0, 5));

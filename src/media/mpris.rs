@@ -69,9 +69,22 @@ impl Player {
 
 /// MPRIS track id: the uri's base62 id under `/org/mpris/MediaPlayer2/Track/`.
 fn track_id(np: &NowPlaying) -> ObjectPath<'static> {
-    let id: String = np.uri.rsplit(':').next().unwrap_or_default().chars().filter(char::is_ascii_alphanumeric).collect();
-    let path = if id.is_empty() { "/org/mpris/MediaPlayer2/TrackList/NoTrack".into() } else { format!("{PATH}/Track/{id}") };
-    ObjectPath::try_from(path).unwrap_or_else(|_| ObjectPath::from_static_str_unchecked("/org/mpris/MediaPlayer2/TrackList/NoTrack"))
+    let id: String = np
+        .uri
+        .rsplit(':')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect();
+    let path = if id.is_empty() {
+        "/org/mpris/MediaPlayer2/TrackList/NoTrack".into()
+    } else {
+        format!("{PATH}/Track/{id}")
+    };
+    ObjectPath::try_from(path).unwrap_or_else(|_| {
+        ObjectPath::from_static_str_unchecked("/org/mpris/MediaPlayer2/TrackList/NoTrack")
+    })
 }
 
 fn us(ms: u64) -> i64 {
@@ -108,7 +121,11 @@ impl Player {
         let np = self.state.borrow().clone();
         let target = us(np.position(proto::now_ms())) + offset;
         // Seeking past the end goes to the next track, per the spec.
-        self.send(Some(if target > us(np.duration_ms as u64) { Cmd::Next } else { Cmd::Seek((target.max(0) / 1000) as u32) }));
+        self.send(Some(if target > us(np.duration_ms as u64) {
+            Cmd::Next
+        } else {
+            Cmd::Seek((target.max(0) / 1000) as u32)
+        }));
     }
 
     fn set_position(&self, track_id: ObjectPath<'_>, position: i64) {
@@ -206,7 +223,9 @@ impl Player {
 
     #[zbus(property)]
     fn set_volume(&mut self, volume: f64) {
-        self.send(Some(Cmd::Volume((volume.clamp(0.0, 1.0) * u16::MAX as f64) as u16)));
+        self.send(Some(Cmd::Volume(
+            (volume.clamp(0.0, 1.0) * u16::MAX as f64) as u16,
+        )));
     }
 
     #[zbus(property(emits_changed_signal = "false"))]
@@ -252,7 +271,13 @@ pub async fn run(mut state: watch::Receiver<NowPlaying>, cmds: Commands) -> Resu
     let conn = zbus::connection::Builder::session()?
         .name("org.mpris.MediaPlayer2.hum")?
         .serve_at(PATH, Root)?
-        .serve_at(PATH, Player { state: state.clone(), cmds })?
+        .serve_at(
+            PATH,
+            Player {
+                state: state.clone(),
+                cmds,
+            },
+        )?
         .build()
         .await?;
     let iface = conn.object_server().interface::<_, Player>(PATH).await?;
@@ -263,7 +288,16 @@ pub async fn run(mut state: watch::Receiver<NowPlaying>, cmds: Commands) -> Resu
         if np.playing != last.playing || np.uri.is_empty() != last.uri.is_empty() {
             player.playback_status_changed(emitter).await?;
         }
-        let track = |n: &NowPlaying| (n.uri.clone(), n.name.clone(), n.artists.clone(), n.album.clone(), n.cover.clone(), n.duration_ms);
+        let track = |n: &NowPlaying| {
+            (
+                n.uri.clone(),
+                n.name.clone(),
+                n.artists.clone(),
+                n.album.clone(),
+                n.cover.clone(),
+                n.duration_ms,
+            )
+        };
         if track(&np) != track(&last) {
             player.metadata_changed(emitter).await?;
             player.can_seek_changed(emitter).await?;
@@ -278,7 +312,9 @@ pub async fn run(mut state: watch::Receiver<NowPlaying>, cmds: Commands) -> Resu
             player.loop_status_changed(emitter).await?;
         }
         // A position away from where the previous report's clock puts it is a seek, not playback.
-        if np.uri == last.uri && (np.position_ms as u64).abs_diff(last.position(np.position_at_ms)) > 1500 {
+        if np.uri == last.uri
+            && (np.position_ms as u64).abs_diff(last.position(np.position_at_ms)) > 1500
+        {
             Player::seeked(emitter, us(np.position_ms as u64)).await?;
         }
         last = np;

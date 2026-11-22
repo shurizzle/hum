@@ -32,7 +32,13 @@ pub struct Track {
 
 impl Track {
     pub fn item(&self) -> Item {
-        Item { uri: self.uri.clone(), name: self.name.clone(), sub: self.artists.join(", "), image: Some(self.cover.clone()).filter(|c| !c.is_empty()), desc: String::new() }
+        Item {
+            uri: self.uri.clone(),
+            name: self.name.clone(),
+            sub: self.artists.join(", "),
+            image: Some(self.cover.clone()).filter(|c| !c.is_empty()),
+            desc: String::new(),
+        }
     }
 
     /// `NowPlaying` (paused, at the start) for this track.
@@ -56,11 +62,26 @@ const TTL: Duration = Duration::from_secs(30 * 24 * 3600);
 /// entries answer locally, one request fetches the rest; when it fails, expired entries are used.
 pub async fn tracks(session: &Session, uris: &[String]) -> Result<Vec<Track>> {
     let cache = Cache::global();
-    let uris: Vec<&String> = uris.iter().filter(|u| u.starts_with("spotify:track:")).collect();
+    let uris: Vec<&String> = uris
+        .iter()
+        .filter(|u| u.starts_with("spotify:track:"))
+        .collect();
     let parse = |b: Vec<u8>| serde_json::from_slice::<Track>(&b).ok();
     let key = |u: &str| format!("track:{}", u.trim_start_matches("spotify:track:"));
-    let mut found: HashMap<String, Track> = uris.iter().filter_map(|u| Some((u.to_string(), cache.read_fresh(&key(u), TTL).and_then(parse)?))).collect();
-    let missing: Vec<&String> = uris.iter().copied().filter(|u| !found.contains_key(*u)).collect();
+    let mut found: HashMap<String, Track> = uris
+        .iter()
+        .filter_map(|u| {
+            Some((
+                u.to_string(),
+                cache.read_fresh(&key(u), TTL).and_then(parse)?,
+            ))
+        })
+        .collect();
+    let missing: Vec<&String> = uris
+        .iter()
+        .copied()
+        .filter(|u| !found.contains_key(*u))
+        .collect();
     if !missing.is_empty() {
         match fetch(session, &missing).await {
             Ok(fetched) => {
@@ -72,7 +93,10 @@ pub async fn tracks(session: &Session, uris: &[String]) -> Result<Vec<Track>> {
                 }
             }
             Err(e) => {
-                let stale: Vec<(String, Track)> = missing.iter().filter_map(|u| Some((u.to_string(), cache.read_any(&key(u)).and_then(parse)?))).collect();
+                let stale: Vec<(String, Track)> = missing
+                    .iter()
+                    .filter_map(|u| Some((u.to_string(), cache.read_any(&key(u)).and_then(parse)?)))
+                    .collect();
                 if stale.is_empty() {
                     return Err(e);
                 }
@@ -91,19 +115,31 @@ const LYRICS_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 /// The "Song Radio" playlist seeded by a track, like the one the official clients keep playing
 /// after a loose track.
 pub async fn radio(session: &Session, uri: &str) -> Result<String> {
-    let body = session.spclient().get_radio_for_track(&SpotifyUri::from_uri(uri)?).await?;
+    let body = session
+        .spclient()
+        .get_radio_for_track(&SpotifyUri::from_uri(uri)?)
+        .await?;
     let v: serde_json::Value = serde_json::from_slice(&body)?;
-    v.pointer("/mediaItems/0/uri").and_then(|u| u.as_str()).map(str::to_string).ok_or_else(|| anyhow::anyhow!("no radio for {uri}"))
+    v.pointer("/mediaItems/0/uri")
+        .and_then(|u| u.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("no radio for {uri}"))
 }
 
 pub async fn lyrics(session: &Session, uri: &str) -> Result<Vec<LyricsLine>> {
-    let id = uri.strip_prefix("spotify:track:").ok_or_else(|| anyhow::anyhow!("no lyrics for {uri}"))?;
+    let id = uri
+        .strip_prefix("spotify:track:")
+        .ok_or_else(|| anyhow::anyhow!("no lyrics for {uri}"))?;
     let (cache, key) = (Cache::global(), format!("lyrics:{id}"));
     let parse = |b: Vec<u8>| serde_json::from_slice::<Vec<LyricsLine>>(&b).ok();
     if let Some(lines) = cache.read_fresh(&key, LYRICS_TTL).and_then(parse) {
         return Ok(lines);
     }
-    let lines = match session.spclient().get_lyrics(&SpotifyId::from_base62(id)?).await {
+    let lines = match session
+        .spclient()
+        .get_lyrics(&SpotifyId::from_base62(id)?)
+        .await
+    {
         Ok(body) => parse_lyrics(&serde_json::from_slice(&body)?),
         Err(e) if matches!(e.kind, ErrorKind::NotFound) => vec![],
         Err(e) => return cache.read_any(&key).and_then(parse).ok_or(e.into()),
@@ -121,7 +157,14 @@ fn parse_lyrics(v: &serde_json::Value) -> Vec<LyricsLine> {
         .into_iter()
         .flatten()
         .map(|l| LyricsLine {
-            start_ms: if synced { l["startTimeMs"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0) } else { 0 },
+            start_ms: if synced {
+                l["startTimeMs"]
+                    .as_str()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0)
+            } else {
+                0
+            },
             words: l["words"].as_str().unwrap_or_default().to_string(),
         })
         .collect()
@@ -134,7 +177,10 @@ async fn fetch(session: &Session, uris: &[&String]) -> Result<Vec<Track>> {
             .iter()
             .map(|u| EntityRequest {
                 entity_uri: u.to_string(),
-                query: vec![ExtensionQuery { extension_kind: EnumOrUnknown::new(ExtensionKind::TRACK_V4), ..Default::default() }],
+                query: vec![ExtensionQuery {
+                    extension_kind: EnumOrUnknown::new(ExtensionKind::TRACK_V4),
+                    ..Default::default()
+                }],
                 ..Default::default()
             })
             .collect(),
@@ -154,7 +200,9 @@ async fn fetch(session: &Session, uris: &[&String]) -> Result<Vec<Track>> {
 
 fn track(uri: &str, t: &metadata::Track) -> Track {
     let album = t.album.as_ref();
-    let images: Vec<&Image> = album.map(|a| a.cover_group.image.iter().chain(&a.cover).collect()).unwrap_or_default();
+    let images: Vec<&Image> = album
+        .map(|a| a.cover_group.image.iter().chain(&a.cover).collect())
+        .unwrap_or_default();
     Track {
         uri: uri.to_string(),
         name: t.name().to_string(),
@@ -167,8 +215,12 @@ fn track(uri: &str, t: &metadata::Track) -> Track {
 
 /// The ~300 px cover (`DEFAULT` size), else any.
 fn cover_url(images: &[&Image]) -> String {
-    let pick = images.iter().find(|i| i.size() == metadata::image::Size::DEFAULT).or(images.first());
-    pick.map(|i| format!("https://i.scdn.co/image/{}", hex(i.file_id()))).unwrap_or_default()
+    let pick = images
+        .iter()
+        .find(|i| i.size() == metadata::image::Size::DEFAULT)
+        .or(images.first());
+    pick.map(|i| format!("https://i.scdn.co/image/{}", hex(i.file_id())))
+        .unwrap_or_default()
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -182,16 +234,38 @@ mod tests {
     #[test]
     fn lyrics_lines_synced_and_unsynced() {
         let v = serde_json::json!({"lyrics": {"syncType": "LINE_SYNCED", "lines": [{"startTimeMs": "5240", "words": "Eh"}, {"startTimeMs": "8520", "words": "Ma"}]}});
-        assert_eq!(parse_lyrics(&v), [LyricsLine { start_ms: 5240, words: "Eh".into() }, LyricsLine { start_ms: 8520, words: "Ma".into() }]);
+        assert_eq!(
+            parse_lyrics(&v),
+            [
+                LyricsLine {
+                    start_ms: 5240,
+                    words: "Eh".into()
+                },
+                LyricsLine {
+                    start_ms: 8520,
+                    words: "Ma".into()
+                }
+            ]
+        );
         let v = serde_json::json!({"lyrics": {"syncType": "UNSYNCED", "lines": [{"startTimeMs": "0", "words": "A"}]}});
         assert_eq!(parse_lyrics(&v)[0].start_ms, 0);
     }
 
     #[test]
     fn cover_prefers_default_size() {
-        let img = |id: u8, size| Image { file_id: Some(vec![id, 0xab]), size: Some(EnumOrUnknown::new(size)), ..Default::default() };
-        let (small, default) = (img(1, metadata::image::Size::SMALL), img(2, metadata::image::Size::DEFAULT));
-        assert_eq!(cover_url(&[&small, &default]), "https://i.scdn.co/image/02ab");
+        let img = |id: u8, size| Image {
+            file_id: Some(vec![id, 0xab]),
+            size: Some(EnumOrUnknown::new(size)),
+            ..Default::default()
+        };
+        let (small, default) = (
+            img(1, metadata::image::Size::SMALL),
+            img(2, metadata::image::Size::DEFAULT),
+        );
+        assert_eq!(
+            cover_url(&[&small, &default]),
+            "https://i.scdn.co/image/02ab"
+        );
         assert_eq!(cover_url(&[&small]), "https://i.scdn.co/image/01ab");
     }
 }

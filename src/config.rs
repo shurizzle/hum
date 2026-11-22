@@ -18,7 +18,8 @@ pub struct Config {
 
 /// `config.default.ron`; it sets every field, so parsing it never falls back on `defaults()`.
 pub fn defaults() -> &'static Config {
-    static DEFAULTS: std::sync::LazyLock<Config> = std::sync::LazyLock::new(|| parse(DEFAULT).expect("config.default.ron"));
+    static DEFAULTS: std::sync::LazyLock<Config> =
+        std::sync::LazyLock::new(|| parse(DEFAULT).expect("config.default.ron"));
     &DEFAULTS
 }
 
@@ -34,6 +35,7 @@ pub fn load() -> Result<Config> {
 
 pub fn parse(s: &str) -> Result<Config> {
     // `timeout: 500` instead of `timeout: Some(500)`.
-    let opts = ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME);
+    let opts =
+        ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME);
     Ok(opts.from_str(s)?)
 }

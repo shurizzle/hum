@@ -44,7 +44,9 @@ fn main() -> Result<()> {
     // later cannot make rustls refuse to guess. Process-wide, before any TLS connection.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let args = Args::parse();
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     // Now Playing remote commands arrive on the main run loop, so the daemon runs beside it.
     #[cfg(target_os = "macos")]
     if matches!(args.cmd, Some(Sub::Daemon)) {
