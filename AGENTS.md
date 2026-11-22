@@ -41,7 +41,8 @@ src/tui/mod.rs     app state, input, cancellable fetches
 src/tui/draw.rs    Spotify-like layout and rendering
 src/tui/images.rs  async cover pipeline
 .github/workflows/ecs.yml    publishes signed Electron as `ecs-<castLabs tag>` releases
-.github/workflows/release.yml  on `vX.Y.Z` tags: binaries for macOS and Linux (static musl), aarch64 + x86_64
+.github/workflows/release.yml  on `vX.Y.Z` tags: binaries for macOS and Linux (static musl), aarch64 + x86_64;
+                               bumps the AUR package and the Homebrew cask
 aur/hum-bin/       AUR package over the Linux release binaries; mirror of the AUR git repo
 ```
 
@@ -69,10 +70,11 @@ Rust toolchain comes from Homebrew `rustup`; `cargo` lives in `/opt/homebrew/opt
 - Prefer existing deps; dependencies build with `opt-level = 3` in dev.
 - Releases: hum is `vX.Y.Z`; signed Electron is a separate `ecs-<castLabs tag>` release made by
   `.github/workflows/ecs.yml` (never latest). Bump `player::ECS_VERSION` only after trying a new one.
-- After a `vX.Y.Z` release: in `aur/hum-bin/` bump `pkgver` (reset `pkgrel=1`), run `updpkgsums`
-  and `makepkg --printsrcinfo > .SRCINFO`, then copy `PKGBUILD`, `.SRCINFO`, `LICENSE` to the AUR repo.
-  In the Homebrew tap repo `shurizzle/homebrew-hum`, `Casks/hum.rb`: bump `version` and both `sha256`
-  (`curl -sL <asset url> | shasum -a 256`).
+- A `vX.Y.Z` release also updates packaging (`release.yml` jobs `aur`, `homebrew`): `aur/hum-bin`
+  gets `pkgver`, `pkgrel=1` and sums from the built archives, is pushed with `.SRCINFO` to the AUR
+  (secret `AUR_SSH_KEY`) and committed back to master; `Casks/hum.rb` in `shurizzle/homebrew-hum`
+  gets `version` and both `sha256` (secret `HOMEBREW_TAP_TOKEN`). Manual fallback: same edits,
+  `makepkg --printsrcinfo > .SRCINFO`, copy `PKGBUILD`, `.SRCINFO`, `LICENSE` to the AUR repo.
 - TLS is rustls only (no OpenSSL), so Linux builds can be fully static (musl): librespot-core/oauth
   use `rustls-tls-webpki-roots` without default features, and so does our `reqwest` (0.12, same as
   `oauth2`, so it is linked once). Only ring is compiled in (no aws-lc-rs); `main` installs the ring

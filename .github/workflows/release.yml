@@ -1,7 +1,10 @@
 # Builds hum for every `vX.Y.Z` tag and attaches the binaries to that release: macOS and Linux,
 # aarch64 and x86_64. Linux builds are fully static (musl). Archives are named
 # `hum-<target triple>.tar.gz`, the layout cargo-binstall expects (Cargo.toml metadata). A manual run only uploads them as
-# workflow artifacts. Only x86_64-apple-darwin is built with the `ecs` feature (castLabs Electron
+# workflow artifacts. After a tag release, `aur` pushes the bumped `aur/hum-bin` to the AUR (and
+# commits it back to master) and `homebrew` bumps `Casks/hum.rb` in shurizzle/homebrew-hum.
+# Secrets: AUR_SSH_KEY (private key of the AUR account), HOMEBREW_TAP_TOKEN (PAT with contents
+# write on the tap). Only x86_64-apple-darwin is built with the `ecs` feature (castLabs Electron
 # engine); the others are Soloist only (see docs/playback.md).
 name: Release
 
@@ -70,6 +73,11 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.ref_name }}
+    outputs:
+      x86_64-unknown-linux-musl: ${{ steps.sums.outputs.x86_64-unknown-linux-musl }}
+      aarch64-unknown-linux-musl: ${{ steps.sums.outputs.aarch64-unknown-linux-musl }}
+      x86_64-apple-darwin: ${{ steps.sums.outputs.x86_64-apple-darwin }}
+      aarch64-apple-darwin: ${{ steps.sums.outputs.aarch64-apple-darwin }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -79,3 +87,77 @@ jobs:
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 \
             || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "hum $TAG" --generate-notes
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber hum-*.tar.gz
+      - id: sums
+        run: |
+          for f in hum-*.tar.gz; do
+            t=${f#hum-}; echo "${t%.tar.gz}=$(sha256sum "$f" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          done
+
+  aur:
+    needs: release
+    runs-on: ubuntu-latest
+    # makepkg is needed for .SRCINFO.
+    container: archlinux:base-devel
+    env:
+      TAG: ${{ github.ref_name }}
+      X86_64: ${{ needs.release.outputs.x86_64-unknown-linux-musl }}
+      AARCH64: ${{ needs.release.outputs.aarch64-unknown-linux-musl }}
+      AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+    steps:
+      - run: pacman -Syu --noconfirm --needed git openssh
+      - uses: actions/checkout@v7
+        with:
+          ref: master
+      - name: Bump PKGBUILD
+        working-directory: aur/hum-bin
+        run: |
+          sed -i -e "s/^pkgver=.*/pkgver=${TAG#v}/" -e "s/^pkgrel=.*/pkgrel=1/" \
+            -e "s/^sha256sums_x86_64=.*/sha256sums_x86_64=('$X86_64')/" \
+            -e "s/^sha256sums_aarch64=.*/sha256sums_aarch64=('$AARCH64')/" PKGBUILD
+          # makepkg refuses to run as root.
+          useradd -m builder
+          install -d -o builder /tmp/srcinfo
+          cp PKGBUILD /tmp/srcinfo/
+          su builder -c 'cd /tmp/srcinfo && makepkg --printsrcinfo' > /tmp/.SRCINFO
+      - name: Push to AUR
+        working-directory: aur/hum-bin
+        run: |
+          install -dm700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur && chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur"
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git clone ssh://aur@aur.archlinux.org/hum-bin.git /tmp/aur
+          cp PKGBUILD LICENSE /tmp/.SRCINFO /tmp/aur/
+          git -C /tmp/aur add PKGBUILD LICENSE .SRCINFO
+          git -C /tmp/aur diff --cached --quiet || git -C /tmp/aur commit -m "Update to ${TAG#v}"
+          git -C /tmp/aur push origin HEAD:master
+      - name: Commit mirror to master
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git diff --quiet || {
+            git commit -am "chore(aur): bump hum-bin to ${TAG#v}"
+            git push origin HEAD:master
+          }
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_name }}
+      ARM: ${{ needs.release.outputs.aarch64-apple-darwin }}
+      INTEL: ${{ needs.release.outputs.x86_64-apple-darwin }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: shurizzle/homebrew-hum
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: Bump cask
+        run: |
+          sed -i -E -e "s/^(  version )\".*\"/\1\"${TAG#v}\"/" \
+            -e "s/(arm: +\")[0-9a-f]{64}/\1$ARM/" -e "s/(intel: +\")[0-9a-f]{64}/\1$INTEL/" Casks/hum.rb
+          git diff
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git diff --quiet || { git commit -am "hum ${TAG#v}" && git push; }
