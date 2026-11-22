@@ -125,7 +125,8 @@ jobs:
           install -dm700 ~/.ssh
           printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur && chmod 600 ~/.ssh/aur
           ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
-          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur"
+          # ssh resolves ~ from passwd (/root), not from the container's $HOME.
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
           git config --global user.name 'github-actions[bot]'
           git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git clone ssh://aur@aur.archlinux.org/hum-bin.git /tmp/aur
