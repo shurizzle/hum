@@ -39,6 +39,8 @@
             "P": Play(Page),
             "a": Queue(Selected),
             "f": Toggle(Like(Selected)),
+            "x": Share(Selected),
+            "X": Share(Playing),
             "d": Unqueue,
             "<Del>": Unqueue,
             "J": Move(Down),

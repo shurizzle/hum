@@ -86,6 +86,8 @@ pub enum Action {
     // Like the CLI subcommands.
     Play(PlayTarget),
     Queue(QueueTarget),
+    /// Copy the open.spotify.com link to the clipboard.
+    Share(ShareTarget),
     Next,
     Prev,
     Toggle(Toggle),
@@ -145,6 +147,14 @@ pub enum QueueTarget {
     /// A track/episode URI or open.spotify.com link.
     Uri(String),
     Selected,
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum ShareTarget {
+    Selected,
+    Playing,
+    /// The open playlist/album/artist/show.
+    Page,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq)]

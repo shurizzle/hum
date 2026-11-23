@@ -95,6 +95,7 @@ Defaults below; all of them can be rebound in `config.ron` ([docs/config.md](con
 | `a` | Add the selected track/episode to the queue (`Cmd::Queue`; works with no active device) |
 | `f` | Like/unlike the selected track, album, artist, playlist (`Api::set_saved`) |
 | `F` | Like/unlike the playing track |
+| `x` / `X` | Copy the open.spotify.com link of the selected item / playing track (OSC 52 and the native clipboard; `Share(Page)` unbound) |
 | `d` / `Delete` | Remove the selected track from the queue (queue focused) |
 | `J` / `K` | Move the selected queue track down / up (queue focused) |
 | `P` | Play the open playlist/album/artist from the start (same as `▶ Play`, hint shown next to it) |

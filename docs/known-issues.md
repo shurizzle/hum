@@ -42,6 +42,9 @@ Spike `spike/widevine/` (ECS v45.2.1+wvcus, Widevine CDM 4.10.3112.0), macOS arm
 
 ## Open
 
+- Share (`x`/`X`): on Linux the native-clipboard copy is owned by the TUI and is lost when it
+  quits, unless a clipboard manager takes it; OSC 52 (when the terminal and tmux allow it) has no
+  such limit.
 - Soloist: a seek while paused (MPRIS `Seek`) leaves the position unchanged; while playing it works.
   Seen with 0.1.1 too (2026-11-22), not investigated.
 - Linux: the `hum` binary is fully static (musl), but Electron is a glibc build needing system

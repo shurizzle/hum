@@ -426,6 +426,17 @@ pub fn spotify_uri(s: &str) -> String {
     }
 }
 
+/// Inverse of `spotify_uri`: `spotify:<kind>:<id>` becomes its open.spotify.com link; other uris
+/// (Liked Songs, `spotify:list:…`, local files) have none.
+pub fn open_link(uri: &str) -> Option<String> {
+    match uri.split(':').collect::<Vec<_>>()[..] {
+        ["spotify", kind, id] if !id.is_empty() && kind != "list" => {
+            Some(format!("https://open.spotify.com/{kind}/{id}"))
+        }
+        _ => None,
+    }
+}
+
 /// The snapshot the daemon sends right after `Hello` (already consumed by the connect).
 async fn state(conn: &mut Conn) -> Result<NowPlaying> {
     match proto::recv::<Msg>(conn).await? {
@@ -512,7 +523,7 @@ fn percent(volume: u16) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Level, seek, spotify_uri, volume};
+    use super::{Level, open_link, seek, spotify_uri, volume};
     use crate::proto::NowPlaying;
 
     fn l(s: &str) -> Level {
@@ -572,5 +583,11 @@ mod tests {
             spotify_uri("https://open.spotify.com/"),
             "https://open.spotify.com/"
         );
+        assert_eq!(
+            open_link("spotify:track:abc").as_deref(),
+            Some("https://open.spotify.com/track/abc")
+        );
+        assert_eq!(open_link("spotify:user:u:collection"), None);
+        assert_eq!(open_link("spotify:list:popular:artist_x"), None);
     }
 }

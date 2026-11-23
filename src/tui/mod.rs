@@ -22,7 +22,10 @@ use crate::{
     proto::{self, Cmd, Conn, Msg, NowPlaying},
 };
 use images::{Done, Images};
-use keys::{Action, Dir, Keymap, LikeTarget, PlayTarget, QueueTarget, Set, Step, Toggle, Vertical};
+use keys::{
+    Action, Dir, Keymap, LikeTarget, PlayTarget, QueueTarget, Set, ShareTarget, Step, Toggle,
+    Vertical,
+};
 
 const TOKEN_REFRESH: Duration = Duration::from_secs(30 * 60);
 /// Upcoming tracks shown; each uncached one costs a Web API call.
@@ -290,6 +293,8 @@ pub struct App {
     /// Keys of a sequence typed so far, and when it stops waiting for more.
     pending: Vec<keys::Key>,
     key_deadline: Option<tokio::time::Instant>,
+    /// Kept alive: on X11/Wayland the copied text lives only while its owner does.
+    clipboard: Option<arboard::Clipboard>,
 }
 
 pub async fn run(mut conn: Conn, keymap: Keymap) -> Result<()> {
@@ -359,6 +364,7 @@ pub async fn run(mut conn: Conn, keymap: Keymap) -> Result<()> {
         keymap,
         pending: vec![],
         key_deadline: None,
+        clipboard: None,
     };
     // Resume like the desktop app: the playing context, else the last page, else home.
     let playing = Some(Item::from_context(&app.np.context)).filter(Item::browsable);
@@ -1064,6 +1070,35 @@ impl App {
         }
     }
 
+    /// Copies the link with OSC 52 (works over SSH, if the terminal allows it) and the native
+    /// clipboard (for terminals that ignore OSC 52).
+    fn share(&mut self, t: ShareTarget) {
+        let uri = match t {
+            ShareTarget::Playing => Some(self.np.uri.clone()),
+            ShareTarget::Selected => self.selected().map(|i| i.uri),
+            ShareTarget::Page => self
+                .page()
+                .and_then(|p| p.header.as_ref())
+                .map(|h| h.uri.clone()),
+        };
+        let Some(link) = uri.as_deref().and_then(cli::open_link) else {
+            self.status = "Nothing to share".into();
+            return;
+        };
+        let osc = execute!(
+            std::io::stdout(),
+            crossterm::clipboard::CopyToClipboard::to_clipboard_from(&link)
+        );
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        let native = self.clipboard.as_mut().map(|c| c.set_text(&link));
+        self.status = match (osc, native) {
+            (Err(_), None | Some(Err(_))) => "Clipboard unavailable".into(),
+            _ => format!("Copied {link}"),
+        };
+    }
+
     fn action(&mut self, a: &Action) -> Option<Cmd> {
         let main = self.focus == Focus::Main;
         let queue = self.focus == Focus::Queue;
@@ -1179,6 +1214,7 @@ impl App {
             }
             Action::Play(PlayTarget::Uri(uri)) => return Some(cli::play(uri)),
             Action::Queue(QueueTarget::Uri(uri)) => return Some(Cmd::Queue(cli::spotify_uri(uri))),
+            Action::Share(t) => self.share(*t),
             Action::Next => return Some(Cmd::Next),
             Action::Prev => return Some(Cmd::Prev),
             Action::Toggle(Toggle::Play) => return Some(Cmd::PlayPause),

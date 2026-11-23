@@ -78,5 +78,6 @@ TUI only:
 | `Open` | Open the selected playlist/album/artist, play a track |
 | `Unqueue`, `Move(Up \| Down)` | Queue focused: remove / move the selected track |
 | `Toggle(Lyrics \| Queue \| Library)` | Lyrics view; now-playing panel; library panel |
+| `Share(Selected \| Playing \| Page)` | Copy the open.spotify.com link of the selected item, playing track or open page to the clipboard |
 | `Search`, `Home`, `Help`, `Devices` | |
 | `Nop` | Nothing (unbinds under `Merge`) |

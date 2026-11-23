@@ -92,7 +92,7 @@ hum completions zsh|bash|fish|...   # shell completion script
 
 `hjkl`/arrows move · `gg`/`G` first/last · `Enter` open/play · `Esc` back · `/` search · `gh` home · `Space` play/pause ·
 `n`/`b` next/previous · `Shift+←/→` seek · `+`/`-` volume · `m` mute · `s` shuffle · `r` repeat ·
-`a` add to queue · `f`/`F` like selected/playing · `[` / `]` library / now-playing panel · `c` pick device · `y` lyrics · `?` all keys · `q` quit · `Q` quit and stop the daemon.
+`a` add to queue · `f`/`F` like selected/playing · `x`/`X` copy link of selected/playing · `[` / `]` library / now-playing panel · `c` pick device · `y` lyrics · `?` all keys · `q` quit · `Q` quit and stop the daemon.
 
 Full reference: [docs/tui.md](docs/tui.md). Keys are vim-style and rebindable in `config.ron`
 (sequences, lists of actions modelled on the CLI): [docs/config.md](docs/config.md).
