@@ -46,7 +46,9 @@ brackets: `<C-x>` Ctrl, `<A-x>`/`<M-x>` Alt, `<S-x>` Shift, `<D-x>` Super, combi
 Names (case-insensitive): `Space`, `Tab` (`<S-Tab>` back-tab), `CR`/`Enter`/`Return`, `Esc`,
 `BS`/`Backspace`, `Del`/`Delete`, `Insert`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`,
 `PageDown`, `F1`–`F24`, `lt` (`<`), `gt` (`>`), `Bar` (`|`), `Bslash` (`\`).
-`<S-a>` is `A`; Ctrl+letter ignores case (terminals send the same).
+`<S-a>` is `A`. `<C-S-d>` (same as `<C-D>`) is Ctrl+Shift+d: hum enables the kitty keyboard
+protocol, and only terminals that support it (kitty, foot, WezTerm, Ghostty, ...) send it apart
+from `<C-d>`; elsewhere Ctrl+Shift+letter arrives as Ctrl+letter.
 
 ### Actions
 
@@ -79,5 +81,32 @@ TUI only:
 | `Unqueue`, `Move(Up \| Down)` | Queue focused: remove / move the selected track |
 | `Toggle(Lyrics \| Queue \| Library)` | Lyrics view; now-playing panel; library panel |
 | `Share(Selected \| Playing \| Page)` | Copy the open.spotify.com link of the selected item, playing track or open page to the clipboard |
+| `Exec(Selected \| Playing \| Page, [args])` | Run a command on the same targets as `Share`; see below |
 | `Search`, `Home`, `Help`, `Devices` | |
 | `Nop` | Nothing (unbinds under `Merge`) |
+
+### Exec
+
+`Exec(target, args)` runs `args` as an argv (no shell). The long form
+`Exec(target, (args: [...], cwd: "...", env: {"NAME": value}))` also sets the working directory
+(default: hum's own; a leading `~` is the home directory) and adds variables to the inherited environment; unknown fields are an error.
+Each argv element and env value is a string or one of the target's values:
+
+| Value | |
+|---|---|
+| `Uri` | `spotify:<kind>:<id>` |
+| `Link` | `https://open.spotify.com/<kind>/<id>` |
+| `Kind` | `<kind>` (`track`, `album`, ...) |
+| `Id` | `<id>` |
+
+`Link`, `Kind` and `Id` need a `spotify:<kind>:<id>` uri: Liked Songs, `spotify:list:…` pages and
+local files have none and the action only reports it. The TUI is suspended while the command runs
+and owns the terminal; on a non-zero exit or a spawn error it waits for Enter, then the error is
+shown in the status line. A literal string equal to `"Uri"`, `"Link"`, `"Kind"` or `"Id"` is taken
+as that value. Nothing is bound by default.
+
+```ron
+"<C-o>": Exec(Selected, ["mpv", Link]),
+"<C-y>": Exec(Playing, ["sh", "-c", "echo \"$0\" | wl-copy", Uri]),
+"<C-d>": Exec(Selected, (args: ["./fetch.sh"], cwd: "/home/me/music", env: {"HUM_ID": Id})),
+```

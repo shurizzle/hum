@@ -88,6 +88,8 @@ pub enum Action {
     Queue(QueueTarget),
     /// Copy the open.spotify.com link to the clipboard.
     Share(ShareTarget),
+    /// Suspend the TUI and run a command (argv) on the target, waiting for Enter if it fails.
+    Exec(ShareTarget, Command),
     Next,
     Prev,
     Toggle(Toggle),
@@ -157,6 +159,48 @@ pub enum ShareTarget {
     Page,
 }
 
+/// `Exec`'s command: the argv alone, or with a working directory and extra environment.
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum Command {
+    Args(Vec<Arg>),
+    Full(Spec),
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Spec {
+    pub args: Vec<Arg>,
+    /// Defaults to hum's own.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Added to the inherited environment.
+    #[serde(default)]
+    pub env: HashMap<String, Arg>,
+}
+
+/// One argv element of `Exec`: a literal string or a value of the target item.
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+// shortcut: under the untagged `Binding` RON idents arrive as strings, so a literal "Uri", "Link",
+// "Kind" or "Id" is taken as the item value; wrap it in `sh -c` if ever needed.
+#[serde(untagged)]
+pub enum Arg {
+    Item(ItemArg),
+    Text(String),
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum ItemArg {
+    /// `spotify:<kind>:<id>`.
+    Uri,
+    /// open.spotify.com link.
+    Link,
+    /// `<kind>` of `spotify:<kind>:<id>`.
+    Kind,
+    /// `<id>` of `spotify:<kind>:<id>`.
+    Id,
+}
+
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum LikeTarget {
     Selected,
@@ -183,13 +227,17 @@ pub fn key(e: KeyEvent) -> Key {
     let mut mods = e.modifiers
         & (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT | KeyModifiers::SUPER);
     let code = match e.code {
-        // The case already says shift; terminals send Ctrl+letter the same either way.
+        // The case already says shift. Legacy encodings send Ctrl+Shift+letter as Ctrl+letter;
+        // with the kitty keyboard protocol it comes with SHIFT (or as uppercase) and stays distinct.
         KeyCode::Char(c) => {
+            let shifted = mods.contains(KeyModifiers::SHIFT) || c.is_ascii_uppercase();
             mods.remove(KeyModifiers::SHIFT);
-            KeyCode::Char(if mods.contains(KeyModifiers::CONTROL) {
-                c.to_ascii_lowercase()
-            } else {
+            KeyCode::Char(if !mods.contains(KeyModifiers::CONTROL) {
                 c
+            } else if shifted {
+                c.to_ascii_uppercase()
+            } else {
+                c.to_ascii_lowercase()
             })
         }
         KeyCode::BackTab => {
@@ -363,6 +411,42 @@ mod tests {
     }
 
     #[test]
+    fn exec() {
+        let a: Action = ron::from_str(r#"Exec(Selected, ["mpv", Link, Uri, Kind, Id])"#).unwrap();
+        let item = |i| Arg::Item(i);
+        assert_eq!(
+            a,
+            Action::Exec(
+                ShareTarget::Selected,
+                Command::Args(vec![
+                    Arg::Text("mpv".into()),
+                    item(ItemArg::Link),
+                    item(ItemArg::Uri),
+                    item(ItemArg::Kind),
+                    item(ItemArg::Id),
+                ])
+            )
+        );
+        // Through `Binding`, as config keys are parsed.
+        let b: Binding = ron::from_str(
+            r#"Exec(Playing, (args: ["mpv"], cwd: "/tmp", env: {"URI": Uri, "X": "y"}))"#,
+        )
+        .unwrap();
+        let Binding::One(Action::Exec(ShareTarget::Playing, Command::Full(spec))) = b else {
+            panic!("not a full Exec");
+        };
+        assert_eq!(spec.cwd.as_deref(), Some("/tmp"));
+        assert_eq!(spec.env["URI"], item(ItemArg::Uri));
+        assert_eq!(spec.env["X"], Arg::Text("y".into()));
+        let b: Binding = ron::from_str(r#"Exec(Page, (args: ["ls"]))"#).unwrap();
+        assert!(matches!(
+            b,
+            Binding::One(Action::Exec(_, Command::Full(Spec { cwd: None, .. })))
+        ));
+        assert!(ron::from_str::<Binding>(r#"Exec(Page, (args: [], ewd: "/"))"#).is_err());
+    }
+
+    #[test]
     fn notation() {
         let none = KeyModifiers::NONE;
         assert_eq!(parse("gg").unwrap(), vec![k(KeyCode::Char('g'), none); 2]);
@@ -384,6 +468,21 @@ mod tests {
         assert_eq!(parse("<F12>").unwrap(), vec![k(KeyCode::F(12), none)]);
         assert!(parse("<Nope>").is_err());
         assert!(parse("").is_err());
+        // Kitty keyboard protocol: Ctrl+Shift+d is not Ctrl+d.
+        let ctrl = KeyModifiers::CONTROL;
+        assert_eq!(
+            key(KeyEvent::new(
+                KeyCode::Char('d'),
+                ctrl | KeyModifiers::SHIFT
+            )),
+            parse("<C-S-d>").unwrap()[0]
+        );
+        assert_eq!(parse("<C-S-d>").unwrap(), parse("<C-D>").unwrap());
+        assert_ne!(parse("<C-S-d>").unwrap(), parse("<C-d>").unwrap());
+        assert_eq!(
+            key(KeyEvent::new(KeyCode::Char('d'), ctrl)),
+            parse("<C-d>").unwrap()[0]
+        );
         // What terminals send for Shift+L and Shift+Tab.
         assert_eq!(
             key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT)),

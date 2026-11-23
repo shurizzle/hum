@@ -429,10 +429,13 @@ pub fn spotify_uri(s: &str) -> String {
 /// Inverse of `spotify_uri`: `spotify:<kind>:<id>` becomes its open.spotify.com link; other uris
 /// (Liked Songs, `spotify:list:…`, local files) have none.
 pub fn open_link(uri: &str) -> Option<String> {
+    uri_parts(uri).map(|(kind, id)| format!("https://open.spotify.com/{kind}/{id}"))
+}
+
+/// `(kind, id)` of a `spotify:<kind>:<id>` uri that has an open.spotify.com link.
+pub fn uri_parts(uri: &str) -> Option<(&str, &str)> {
     match uri.split(':').collect::<Vec<_>>()[..] {
-        ["spotify", kind, id] if !id.is_empty() && kind != "list" => {
-            Some(format!("https://open.spotify.com/{kind}/{id}"))
-        }
+        ["spotify", kind, id] if !id.is_empty() && kind != "list" => Some((kind, id)),
         _ => None,
     }
 }
@@ -523,7 +526,7 @@ fn percent(volume: u16) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Level, open_link, seek, spotify_uri, volume};
+    use super::{Level, open_link, seek, spotify_uri, uri_parts, volume};
     use crate::proto::NowPlaying;
 
     fn l(s: &str) -> Level {
@@ -589,5 +592,7 @@ mod tests {
         );
         assert_eq!(open_link("spotify:user:u:collection"), None);
         assert_eq!(open_link("spotify:list:popular:artist_x"), None);
+        assert_eq!(uri_parts("spotify:album:xyz"), Some(("album", "xyz")));
+        assert_eq!(uri_parts("spotify:track:"), None);
     }
 }

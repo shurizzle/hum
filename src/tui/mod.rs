@@ -8,7 +8,8 @@ use anyhow::{Result, bail};
 use crossterm::{
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
-        KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent,
+        MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
 };
@@ -23,8 +24,8 @@ use crate::{
 };
 use images::{Done, Images};
 use keys::{
-    Action, Dir, Keymap, LikeTarget, PlayTarget, QueueTarget, Set, ShareTarget, Step, Toggle,
-    Vertical,
+    Action, Arg, Command, Dir, ItemArg, Keymap, LikeTarget, PlayTarget, QueueTarget, Set,
+    ShareTarget, Step, Toggle, Vertical,
 };
 
 const TOKEN_REFRESH: Duration = Duration::from_secs(30 * 60);
@@ -295,6 +296,8 @@ pub struct App {
     key_deadline: Option<tokio::time::Instant>,
     /// Kept alive: on X11/Wayland the copied text lives only while its owner does.
     clipboard: Option<arboard::Clipboard>,
+    /// An `Exec`'s command, run by the event loop with the TUI suspended.
+    exec: Option<std::process::Command>,
 }
 
 pub async fn run(mut conn: Conn, keymap: Keymap) -> Result<()> {
@@ -365,6 +368,7 @@ pub async fn run(mut conn: Conn, keymap: Keymap) -> Result<()> {
         pending: vec![],
         key_deadline: None,
         clipboard: None,
+        exec: None,
     };
     // Resume like the desktop app: the playing context, else the last page, else home.
     let playing = Some(Item::from_context(&app.np.context)).filter(Item::browsable);
@@ -379,13 +383,32 @@ pub async fn run(mut conn: Conn, keymap: Keymap) -> Result<()> {
     app.load_library();
     app.load_queue();
 
-    let mut terminal = ratatui::init();
-    execute!(std::io::stdout(), EnableMouseCapture)?;
+    let mut terminal = enter_terminal()?;
     let res = event_loop(&mut terminal, &mut app, &mut conn, &mut rx, &mut img_rx).await;
     save_last_page(app.page().and_then(|p| p.header.as_ref()));
-    let _ = execute!(std::io::stdout(), DisableMouseCapture);
-    ratatui::restore();
+    leave_terminal();
     res
+}
+
+/// Alternate screen, raw mode, mouse, and the kitty keyboard protocol (Ctrl+Shift+letter apart
+/// from Ctrl+letter; terminals without it ignore the request).
+fn enter_terminal() -> Result<DefaultTerminal> {
+    let terminal = ratatui::init();
+    execute!(
+        std::io::stdout(),
+        EnableMouseCapture,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )?;
+    Ok(terminal)
+}
+
+fn leave_terminal() {
+    let _ = execute!(
+        std::io::stdout(),
+        PopKeyboardEnhancementFlags,
+        DisableMouseCapture
+    );
+    ratatui::restore();
 }
 
 async fn event_loop(
@@ -524,8 +547,44 @@ async fn event_loop(
         for cmd in cmds.into_iter().chain(std::mem::take(&mut app.outbox)) {
             proto::send(conn, &cmd).await?;
         }
+        if let Some(command) = app.exec.take() {
+            // The event reader would steal the child's stdin: drop it before handing the terminal over.
+            drop(events);
+            leave_terminal();
+            if let Err(e) = tokio::task::spawn_blocking(move || run_external(command)).await? {
+                app.status = e;
+            }
+            *terminal = enter_terminal()?;
+            events = EventStream::new();
+        }
     }
     Ok(())
+}
+
+/// `~` and `~/…` become the home directory; `~user` and variables are left as they are.
+fn expand_home(path: &str) -> std::path::PathBuf {
+    match (path.strip_prefix('~'), dirs::home_dir()) {
+        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
+            home.join(rest.trim_start_matches('/'))
+        }
+        _ => path.into(),
+    }
+}
+
+/// Runs `command` on the inherited terminal; a failure waits for Enter so it stays readable.
+fn run_external(mut command: std::process::Command) -> Result<(), String> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let err = match command.status() {
+        Ok(status) if status.success() => return Ok(()),
+        Ok(status) => format!("{program} exited with {status}"),
+        Err(e) => format!("{program}: {e}"),
+    };
+    use std::io::{BufRead, Write};
+    let mut stdout = std::io::stdout();
+    let _ = writeln!(stdout, "\n{err}\nPress ENTER to continue");
+    let _ = stdout.flush();
+    let _ = std::io::stdin().lock().read_line(&mut String::new());
+    Err(err)
 }
 
 impl App {
@@ -1073,15 +1132,7 @@ impl App {
     /// Copies the link with OSC 52 (works over SSH, if the terminal allows it) and the native
     /// clipboard (for terminals that ignore OSC 52).
     fn share(&mut self, t: ShareTarget) {
-        let uri = match t {
-            ShareTarget::Playing => Some(self.np.uri.clone()),
-            ShareTarget::Selected => self.selected().map(|i| i.uri),
-            ShareTarget::Page => self
-                .page()
-                .and_then(|p| p.header.as_ref())
-                .map(|h| h.uri.clone()),
-        };
-        let Some(link) = uri.as_deref().and_then(cli::open_link) else {
+        let Some(link) = self.target_uri(t).as_deref().and_then(cli::open_link) else {
             self.status = "Nothing to share".into();
             return;
         };
@@ -1097,6 +1148,57 @@ impl App {
             (Err(_), None | Some(Err(_))) => "Clipboard unavailable".into(),
             _ => format!("Copied {link}"),
         };
+    }
+
+    fn target_uri(&self, t: ShareTarget) -> Option<String> {
+        match t {
+            ShareTarget::Playing => Some(self.np.uri.clone()).filter(|u| !u.is_empty()),
+            ShareTarget::Selected => self.selected().map(|i| i.uri),
+            ShareTarget::Page => self
+                .page()
+                .and_then(|p| p.header.as_ref())
+                .map(|h| h.uri.clone()),
+        }
+    }
+
+    /// Builds the argv; the event loop runs it, since a child here would fight the raw terminal.
+    fn exec(&mut self, t: ShareTarget, command: &Command) {
+        let Some(uri) = self.target_uri(t) else {
+            self.status = "Nothing to run on".into();
+            return;
+        };
+        let (args, cwd, env) = match command {
+            Command::Args(args) => (args, None, None),
+            Command::Full(s) => (&s.args, s.cwd.as_ref(), Some(&s.env)),
+        };
+        let parts = cli::uri_parts(&uri);
+        let value = |a: &Arg| match a {
+            Arg::Text(s) => Some(s.clone()),
+            Arg::Item(ItemArg::Uri) => Some(uri.clone()),
+            Arg::Item(ItemArg::Link) => cli::open_link(&uri),
+            Arg::Item(ItemArg::Kind) => parts.map(|(k, _)| k.to_owned()),
+            Arg::Item(ItemArg::Id) => parts.map(|(_, i)| i.to_owned()),
+        };
+        let argv: Option<Vec<String>> = args.iter().map(value).collect();
+        let env: Option<Vec<(&String, String)>> = env
+            .into_iter()
+            .flatten()
+            .map(|(k, v)| Some((k, value(v)?)))
+            .collect();
+        let (Some(argv), Some(env)) = (argv, env) else {
+            self.status = format!("No link for {uri}");
+            return;
+        };
+        let Some((program, rest)) = argv.split_first() else {
+            self.status = "Empty command".into();
+            return;
+        };
+        let mut c = std::process::Command::new(program);
+        c.args(rest).envs(env);
+        if let Some(cwd) = cwd {
+            c.current_dir(expand_home(cwd));
+        }
+        self.exec = Some(c);
     }
 
     fn action(&mut self, a: &Action) -> Option<Cmd> {
@@ -1215,6 +1317,7 @@ impl App {
             Action::Play(PlayTarget::Uri(uri)) => return Some(cli::play(uri)),
             Action::Queue(QueueTarget::Uri(uri)) => return Some(Cmd::Queue(cli::spotify_uri(uri))),
             Action::Share(t) => self.share(*t),
+            Action::Exec(t, args) => self.exec(*t, args),
             Action::Next => return Some(Cmd::Next),
             Action::Prev => return Some(Cmd::Prev),
             Action::Toggle(Toggle::Play) => return Some(Cmd::PlayPause),
@@ -1425,6 +1528,15 @@ fn play_context(uri: String) -> Cmd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home() {
+        let h = dirs::home_dir().unwrap();
+        assert_eq!(expand_home("~"), h);
+        assert_eq!(expand_home("~/music"), h.join("music"));
+        assert_eq!(expand_home("~bob/x"), std::path::PathBuf::from("~bob/x"));
+        assert_eq!(expand_home("/a/~"), std::path::PathBuf::from("/a/~"));
+    }
 
     fn item(uri: &str) -> Item {
         Item {
